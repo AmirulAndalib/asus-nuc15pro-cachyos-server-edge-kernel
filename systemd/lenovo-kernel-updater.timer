@@ -1,0 +1,10 @@
+[Unit]
+Description=Check GitHub Releases for Lenovo kernel every Thursday at 00:30 local time
+
+[Timer]
+OnCalendar=Thu 00:30:00
+Persistent=true
+RandomizedDelaySec=0
+
+[Install]
+WantedBy=timers.target

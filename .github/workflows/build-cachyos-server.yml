@@ -1,0 +1,202 @@
+name: Build Lenovo V15 G2 ITL CachyOS Edge Kernel
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Wednesday 12:00 UTC = Thursday 00:00 NZST / 01:00 NZDT
+    - cron: "0 12 * * 3"
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+concurrency:
+  group: lenovo-v15g2-itl-cachyos-edge-kernel
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build CachyOS edge kernel RC — ARM64 cross-compile to x86-64-v3 amd64
+    runs-on: [self-hosted, Linux, ARM64, oracle-a1, tkg-builder]
+    timeout-minutes: 720
+
+    steps:
+      - name: Fix root-owned files from prior build
+        run: |
+          sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" 2>/dev/null || true
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show runner info
+        run: |
+          uname -a
+          lscpu | head -40 || true
+          df -h
+          free -h
+          docker version
+
+          echo "## Runner" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          uname -a >> "$GITHUB_STEP_SUMMARY"
+          df -h >> "$GITHUB_STEP_SUMMARY"
+          free -h >> "$GITHUB_STEP_SUMMARY"
+          docker version >> "$GITHUB_STEP_SUMMARY" 2>&1 || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build or restore builder image
+        run: |
+          docker build \
+            -t cachyos-builder:latest \
+            -f Dockerfile.builder \
+            .
+
+      - name: Build kernel
+        run: |
+          chmod +x scripts/build-cachyos-server.sh
+          mkdir -p dist
+
+          CCACHE_HOST="$HOME/.cache/ccache-cachyos"
+          mkdir -p "$CCACHE_HOST"
+
+          docker run --rm \
+            --shm-size=2g \
+            -v "$PWD:/work" \
+            -v "$CCACHE_HOST:/ccache" \
+            -w /work \
+            -e CCACHE_DIR=/ccache \
+            -e CCACHE_MAXSIZE=20G \
+            -e HOST_UID="$(id -u)" \
+            -e HOST_GID="$(id -g)" \
+            -e CACHY_VARIANT="linux-cachyos-rc" \
+            cachyos-builder:latest \
+            bash /work/scripts/build-cachyos-server.sh
+
+      - name: Verify release assets
+        run: |
+          ls -lh dist/
+          test -f dist/SHA256SUMS
+          test -f dist/BUILD_MANIFEST
+          test "$(find dist -name 'linux-image-*.deb' | wc -l)" -ge 1
+          test "$(find dist -name 'linux-headers-*.deb' | wc -l)" -ge 1
+
+          echo "Verifying .deb integrity ..."
+          for deb in dist/*.deb; do
+            dpkg --info "$deb" > /dev/null
+          done
+
+          echo "## Built packages" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          ls -lh dist/ >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+          echo "**Build manifest:**" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat dist/BUILD_MANIFEST >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+          echo "**SHA-256 checksums:**" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat dist/SHA256SUMS >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+          CCACHE_HOST="$HOME/.cache/ccache-cachyos"
+          if [ -d "$CCACHE_HOST" ]; then
+            echo "**ccache stats:**" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            CCACHE_DIR="$CCACHE_HOST" ccache -s >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cachyos-edge-debs-run${{ github.run_number }}-${{ github.run_attempt }}
+          path: dist/
+          retention-days: 7
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          source dist/BUILD_MANIFEST
+
+          DEB="$(find dist -name 'linux-image-*.deb' | sort | head -1)"
+          KVER_PKG="$(basename "$DEB" | sed 's/linux-image-//' | cut -d_ -f1)"
+
+          KVER_NUM="$(echo "$KVER_PKG" | sed 's/-[0-9]*-cachyos$//' | sed 's/-[0-9]*$//')"
+          BUILD_DATE="$(date -u +%Y-%m-%d)"
+          BUILD_DATE_NODASH="$(date -u +%Y%m%d)"
+          CHECKSUMS="$(cat dist/SHA256SUMS)"
+
+          TAG="v${KVER_NUM}-cachyos-edge-x86_64v3-${BUILD_DATE_NODASH}.${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
+          TITLE="Linux ${KVER_PKG} • CachyOS Edge • Lenovo V15 G2 ITL • ${BUILD_DATE}"
+
+          PRERELEASE_OPTS=()
+          echo "$KVER_NUM" | grep -qi 'rc' && PRERELEASE_OPTS+=(--prerelease)
+
+          cat > /tmp/release-notes.md << NOTES_EOF
+          ## Linux ${KVER_PKG} — CachyOS Edge
+
+          Bleeding-edge CachyOS kernel build for the **Lenovo V15 G2 ITL** with Intel Core i5-1135G7 / Tiger Lake.
+
+          ### Build Configuration
+
+          - Kernel version: \`${KVER_PKG}\`
+          - CachyOS variant: \`${CACHY_VARIANT}\`
+          - Scheduler: \`${SCHEDULER}\`
+          - Compiler: LLVM / Clang \`${CLANG_VERSION}\` + LLD \`${LLD_VERSION}\`
+          - LTO: \`${LTO}\`
+          - CPU target: \`${CPU_TARGET}\`
+          - Timer frequency: \`${TIMER_HZ} Hz\`
+          - Transparent Huge Pages: \`${THP}\`
+          - Preemption model: \`${PREEMPT}\`
+          - Kernel local version: \`${KERNEL_LOCALVERSION}\`
+
+          ### Target Hardware
+
+          - Device: Lenovo V15 G2 ITL
+          - CPU: Intel Core i5-1135G7 / Tiger Lake
+          - iGPU: Intel Iris Xe / i915 / Quick Sync
+          - WiFi: Intel AX201
+          - Runtime GPU option: \`i915.enable_guc=3\`
+
+          ### Checksums
+
+          \`\`\`
+          ${CHECKSUMS}
+          \`\`\`
+
+          ### Provenance
+
+          - Build timestamp: \`${BUILD_DATE_UTC}\`
+          - linux-cachyos commit: \`${CACHY_COMMIT}\`
+          - Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          - Builder: Oracle Ampere A1 ARM64
+          - Output: Debian/Ubuntu amd64 \`.deb\` packages
+          NOTES_EOF
+
+          gh release create "$TAG" \
+            dist/*.deb dist/SHA256SUMS dist/BUILD_MANIFEST \
+            --title "$TITLE" \
+            "${PRERELEASE_OPTS[@]}" \
+            --notes-file /tmp/release-notes.md
+
+          RELEASE_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
+
+          echo "## Release created" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "$RELEASE_URL" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Tag | \`$TAG\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Kernel | \`$KVER_PKG\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Clang | \`$CLANG_VERSION\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| LLD | \`$LLD_VERSION\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| linux-cachyos | \`$CACHY_COMMIT\` |" >> "$GITHUB_STEP_SUMMARY"
