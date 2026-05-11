@@ -87,7 +87,7 @@ git clone https://github.com/AmirulAndalib/lenovo-v15g2-itl-cachyos-server-edge-
 
 Set your repo in two places:
 
-**`scripts/lenovo-release-installer.sh`** line 4:
+**`scripts/lenovo-kernel-updater.sh`** line 4:
 
 ```bash
 OWNER_REPO="${OWNER_REPO:-AmirulAndalib/lenovo-v15g2-itl-cachyos-server-edge-kernel}"
@@ -117,7 +117,7 @@ Docker must be installed and the runner user must have permission to run Docker 
 Run as root:
 
 ```bash
-cp scripts/lenovo-release-installer.sh /usr/local/sbin/lenovo-kernel-updater.sh
+cp scripts/lenovo-kernel-updater.sh /usr/local/sbin/lenovo-kernel-updater.sh
 chmod 700 /usr/local/sbin/lenovo-kernel-updater.sh
 
 cp systemd/lenovo-kernel-updater.service /etc/systemd/system/

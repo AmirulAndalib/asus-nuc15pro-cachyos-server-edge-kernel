@@ -1,4 +1,4 @@
-name: Build Lenovo V15 G2 ITL CachyOS Edge Kernel
+name: Build Lenovo V15 G2 ITL CachyOS ServerMax Kernel
 
 on:
   workflow_dispatch:
@@ -12,12 +12,12 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 concurrency:
-  group: lenovo-v15g2-itl-cachyos-edge-kernel
+  group: lenovo-v15g2-itl-cachyos-servermax-kernel
   cancel-in-progress: false
 
 jobs:
   build:
-    name: Build CachyOS edge kernel RC - ARM64 cross-compile to x86-64-v3 amd64
+    name: Build CachyOS ServerMax kernel — ARM64 cross-compile to x86-64-v3 amd64
     runs-on: [self-hosted, Linux, ARM64, oracle-a1, tkg-builder]
     timeout-minutes: 720
 
@@ -59,8 +59,13 @@ jobs:
           git clone --depth=1 --quiet \
             https://github.com/CachyOS/linux-cachyos.git "$CACHY_TMPDIR"
 
+          VARIANT="linux-cachyos-server"
+          if [ ! -d "$CACHY_TMPDIR/$VARIANT" ]; then
+            VARIANT="linux-cachyos"
+          fi
+
           KVER="$(bash -c "
-            cd '$CACHY_TMPDIR/linux-cachyos-server'
+            cd '$CACHY_TMPDIR/$VARIANT'
             prepare(){ true; }; build(){ true; }; package(){ true; }
             source PKGBUILD 2>/dev/null || true
             printf '%s' \"\${pkgver:-}\"
@@ -87,7 +92,7 @@ jobs:
             --json tagName \
             --jq '.[].tagName' 2>/dev/null || true)"
 
-          if echo "$RECENT" | grep -qF "v${KVER}-cachyos-edge-x86_64v3-servermax-"; then
+          if echo "$RECENT" | grep -q "v${KVER}-cachyos-servermax-x86_64v3-"; then
             echo "SKIP: $KVER already has a servermax release."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             {
@@ -192,7 +197,7 @@ jobs:
           BUILD_DATE_NODASH="$(date -u +%Y%m%d)"
           CHECKSUMS="$(cat dist/SHA256SUMS)"
 
-          TAG="v${KERNEL_VERSION}-cachyos-edge-x86_64v3-servermax-${BUILD_DATE_NODASH}.${GITHUB_RUN_NUMBER}"
+          TAG="v${KERNEL_VERSION}-cachyos-servermax-x86_64v3-${BUILD_DATE_NODASH}.${GITHUB_RUN_NUMBER}"
           TITLE="Linux ${KERNEL_VERSION} • CachyOS ServerMax • Lenovo V15 G2 ITL • ${BUILD_DATE}"
 
           PRERELEASE_OPTS=()
@@ -201,32 +206,33 @@ jobs:
           cat > /tmp/release-notes.md << NOTES_EOF
           ## Linux ${KERNEL_VERSION}, CachyOS ServerMax
 
-          AC-powered, server-throughput CachyOS kernel for the **Lenovo V15 G2 ITL** - Intel Core i5-1135G7 / Tiger Lake.
+          AC-powered, full-throughput CachyOS ServerMax kernel for **Lenovo V15 G2 ITL** with Intel Core i5-1135G7 / Tiger Lake.
 
           ### Build Configuration
 
           - Kernel version: \`${KERNEL_VERSION}${KERNEL_LOCALVERSION}\`
           - CachyOS variant: \`${CACHY_VARIANT}\`
-          - Base scheduler: \`${SCHEDULER}\`
+          - Scheduler base: \`${SCHEDULER}\`
           - sched_ext support: \`${SCHED_EXT}\`
           - Compiler: LLVM / Clang \`${CLANG_VERSION}\` + LLD \`${LLD_VERSION}\`
           - LTO: \`${LTO}\`
           - CPU target: \`${CPU_TARGET}\`
           - Timer frequency: \`${TIMER_HZ} Hz\`
-          - Transparent Huge Pages: \`${THP}\`
           - Preemption model: \`${PREEMPT}\`
+          - THP: \`${THP}\`
+          - Zswap: \`${ZSWAP}\`
           - I/O scheduler: \`${IO_SCHEDULER}\`
           - CPU policy: \`${CPU_POLICY}\`
           - RCU lazy: \`${RCU_LAZY}\`
-          - Kernel local version: \`${KERNEL_LOCALVERSION}\`
 
-          ### Target Hardware
+          ### Runtime Defaults
 
-          - Device: Lenovo V15 G2 ITL
-          - CPU: Intel Core i5-1135G7 / Tiger Lake (x86-64-v3)
-          - iGPU: Intel Iris Xe / i915 / Quick Sync (\`i915.enable_guc=3\`)
-          - Wi-Fi: Intel AX201
-          - Zswap: \`zswap.enabled=1 zswap.compressor=lz4 zswap.max_pool_percent=20\`
+          - CPU governor: \`performance\`
+          - Intel EPP: \`performance\`
+          - Intel iGPU GuC/HuC: \`i915.enable_guc=3\`
+          - SCX server scheduler: \`scx_bpfland -s 20000 -S\`
+          - zswap: \`zstd\`, \`z3fold\`, \`20%\`
+          - TCP: \`bbr\` + \`fq\`
 
           ### SHA-256 Checksums
 

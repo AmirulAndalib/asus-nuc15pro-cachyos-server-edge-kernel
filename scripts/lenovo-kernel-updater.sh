@@ -29,7 +29,7 @@ apt-get install -y curl jq ca-certificates
 
 echo "========== FETCH LATEST RELEASE METADATA =========="
 # Use list endpoint (not /releases/latest) so prereleases (RC builds) are included.
-# jq '.[0]' extracts the most recent release as a single object - 
+# jq '.[0]' extracts the most recent release as a single object -
 # all downstream .tag_name / .assets[] queries work unchanged.
 curl -fsSL "https://api.github.com/repos/${OWNER_REPO}/releases" | \
   jq '.[0]' > "$WORK_DIR/latest-release.json"
@@ -55,12 +55,10 @@ if [ -f "$LAST_TAG_FILE" ] && [ "$(cat "$LAST_TAG_FILE")" = "$TAG" ]; then
   echo "State file says release $TAG is already installed."
 
   if echo "$CURRENT_KERNEL" | grep -q 'cachyos-edge-lenovov15g2-servermax'; then
-    echo "Already running ServerMax kernel. Nothing to do."
-    exit 0
-  fi
-
-  if dpkg -l | grep -qE '^ii[[:space:]]+linux-image-.*cachyos-edge-lenovov15g2-servermax'; then
-    echo "ServerMax kernel installed but not running - will set GRUB default and reboot."
+    echo "Already running ServerMax kernel. Will still verify/tune SCX and runtime settings."
+    NEED_REBOOT_ONLY=2
+  elif dpkg -l | grep -qE '^ii[[:space:]]+linux-image-.*cachyos-edge-lenovov15g2-servermax'; then
+    echo "ServerMax kernel installed but not running — will set GRUB default and reboot."
     NEED_REBOOT_ONLY=1
   fi
 fi
@@ -130,12 +128,12 @@ mkdir -p "$BACKUP_DIR"
 cp -a /etc/default/grub "$BACKUP_DIR/grub.bak" 2>/dev/null || true
 
 # Intel Tiger Lake Iris Xe - hardware GuC submission + HuC media firmware
-install -Dm644 /dev/stdin /etc/modprobe.d/i915-guc.conf << 'MODPROBE'
+install -Dm644 /dev/stdin /etc/modprobe.d/i915-guc.conf <<'MODPROBE'
 options i915 enable_guc=3
 MODPROBE
 
 # Server-max sysctl tuning
-install -Dm644 /dev/stdin /etc/sysctl.d/99-lenovo-v15g2-servermax.conf << 'SYSCTL'
+install -Dm644 /dev/stdin /etc/sysctl.d/99-lenovo-v15g2-servermax.conf <<'SYSCTL'
 # TCP: BBR + FQ
 net.core.default_qdisc             = fq
 net.ipv4.tcp_congestion_control    = bbr
@@ -166,14 +164,14 @@ dev.i915.perf_stream_paranoid      = 0
 SYSCTL
 
 # I/O scheduler: ADIOS for SSDs/NVMe, BFQ for spinning disks
-install -Dm644 /dev/stdin /etc/udev/rules.d/60-lenovo-v15g2-ioschedulers.rules << 'UDEV'
+install -Dm644 /dev/stdin /etc/udev/rules.d/60-lenovo-v15g2-ioschedulers.rules <<'UDEV'
 ACTION=="add|change", KERNEL=="sd[a-z]", ATTR{queue/rotational}=="1", ATTR{queue/scheduler}="bfq"
 ACTION=="add|change", KERNEL=="sd[a-z]|mmcblk[0-9]", ATTR{queue/rotational}=="0", ATTR{queue/scheduler}="adios"
 ACTION=="add|change", KERNEL=="nvme[0-9]n[0-9]", ATTR{queue/rotational}=="0", ATTR{queue/scheduler}="adios"
 UDEV
 
 # CPU performance governor + EPP performance via systemd oneshot
-install -Dm644 /dev/stdin /etc/systemd/system/lenovo-v15g2-servermax-cpupower.service << 'SERVICE'
+install -Dm644 /dev/stdin /etc/systemd/system/lenovo-v15g2-servermax-cpupower.service <<'SERVICE'
 [Unit]
 Description=Lenovo V15 G2 ITL ServerMax CPU full performance policy
 After=multi-user.target
@@ -192,27 +190,74 @@ systemctl daemon-reload
 systemctl enable lenovo-v15g2-servermax-cpupower.service || true
 
 echo "========== INSTALL SCHED_EXT USERSPACE SCHEDULERS =========="
-# Try Ubuntu package first, then fallback message.
-# scx-scheds provides scx_bpfland, scx_rusty, scx_lavd, scx_p2dq, etc.
-apt-get install -y scx-scheds scx-tools 2>/dev/null || \
+
+install_scx_from_source() {
+  echo "Building sched-ext/scx from source..."
+  apt-get update -qq
+  apt-get install -y \
+    git curl ca-certificates build-essential pkg-config \
+    clang llvm libelf-dev zlib1g-dev libzstd-dev protobuf-compiler \
+    rustc cargo make cmake ninja-build bpftool || true
+
+  rm -rf /opt/scx
+  git clone --depth=1 https://github.com/sched-ext/scx.git /opt/scx
+
+  (
+    cd /opt/scx
+    cargo build --release --locked || cargo build --release
+    find target/release -maxdepth 1 -type f -executable -name 'scx_*' \
+      -exec install -Dm755 {} /usr/local/bin/ \; || true
+    find target/release -maxdepth 1 -type f -executable -name 'scxctl' \
+      -exec install -Dm755 {} /usr/local/bin/ \; || true
+    find target/release -maxdepth 1 -type f -executable -name 'scx_loader' \
+      -exec install -Dm755 {} /usr/local/bin/ \; || true
+  )
+}
+
+if command -v scx_bpfland >/dev/null 2>&1; then
+  echo "OK: scx_bpfland already installed: $(command -v scx_bpfland)"
+else
+  echo "scx_bpfland not found — trying apt packages..."
+  # scx-scheds provides scx_bpfland, scx_rusty, scx_lavd, scx_p2dq, etc.
+  apt-get install -y scx-scheds scx-tools 2>/dev/null || \
   apt-get install -y scx           2>/dev/null || \
-  echo "INFO: scx packages not in repos - install from https://github.com/sched-ext/scx/releases"
+  install_scx_from_source || true
+fi
+
+# Re-check: if still missing after apt attempts, force source build
+if ! command -v scx_bpfland >/dev/null 2>&1; then
+  echo "WARN: scx_bpfland still missing after apt install — falling back to source build..."
+  install_scx_from_source || echo "WARN: source build also failed; kernel EEVDF will remain active"
+fi
+
+echo "========== VERIFY SCX BINARIES =========="
+for b in scx_bpfland scx_p2dq scx_rusty scx_beerland scx_lavd scx_loader scxctl; do
+  if command -v "$b" >/dev/null 2>&1; then
+    echo "FOUND: $b -> $(command -v "$b")"
+  else
+    echo "MISSING: $b"
+  fi
+done
 
 echo "========== CONFIGURE SCHED_EXT SERVER MODE =========="
 # Server-optimal scheduler: scx_bpfland -s 20000 -S
 #   -s 20000  : slice 20ms (better throughput)
 #   -S        : prioritize strict-affinity tasks (server workloads)
-# Fallback chain: bpfland -> p2dq -> rusty -> beerland
+# Fallback chain: bpfland -> p2dq -> bpfland (no args) -> rusty -> beerland -> lavd
 
-install -Dm755 /dev/stdin /usr/local/sbin/scx-servermax-start.sh << 'SCX_WRAPPER'
+install -Dm755 /dev/stdin /usr/local/sbin/scx-servermax-start.sh <<'SCX_WRAPPER'
 #!/bin/sh
-set -e
+set -eu
+
+echo "sched_ext ServerMax launcher starting..."
+
 for pair in \
   "scx_bpfland:-s 20000 -S" \
   "scx_p2dq:--keep-running" \
   "scx_bpfland:" \
   "scx_rusty:" \
-  "scx_beerland:"; do
+  "scx_beerland:" \
+  "scx_lavd:"; do
   sched="${pair%%:*}"
   args="${pair#*:}"
   if command -v "$sched" >/dev/null 2>&1; then
@@ -220,11 +265,12 @@ for pair in \
     exec "$sched" $args
   fi
 done
-echo "No scx scheduler found. Kernel EEVDF remains active."
+
+echo "No scx scheduler binary found. Kernel EEVDF remains active."
 exit 0
 SCX_WRAPPER
 
-install -Dm644 /dev/stdin /etc/systemd/system/lenovo-v15g2-scx-server.service << 'SCX_SVC'
+install -Dm644 /dev/stdin /etc/systemd/system/lenovo-v15g2-scx-server.service <<'SCX_SVC'
 [Unit]
 Description=sched_ext server scheduler - Lenovo V15 G2 ITL ServerMax
 Documentation=https://github.com/sched-ext/scx
@@ -243,9 +289,10 @@ SCX_SVC
 
 # Use scx_loader if available (preferred - handles kernel upgrades cleanly),
 # otherwise use our direct service.
+systemctl daemon-reload
 if systemctl list-unit-files scx_loader.service &>/dev/null 2>&1; then
   mkdir -p /etc/scx_loader
-  cat > /etc/scx_loader/config.toml << 'SCX_CFG'
+  cat > /etc/scx_loader/config.toml <<'SCX_CFG'
 default_sched = "scx_bpfland"
 default_mode  = "Server"
 SCX_CFG
@@ -253,8 +300,21 @@ SCX_CFG
   systemctl enable --now scx_loader.service || true
   systemctl disable lenovo-v15g2-scx-server.service 2>/dev/null || true
 else
-  systemctl daemon-reload
   systemctl enable --now lenovo-v15g2-scx-server.service || true
+fi
+
+# When already running the target kernel, ensure SCX is active
+if [ "$NEED_REBOOT_ONLY" -eq 2 ]; then
+  SCX_ACTIVE=0
+  systemctl is-active --quiet lenovo-v15g2-scx-server.service 2>/dev/null && SCX_ACTIVE=1 || true
+  systemctl is-active --quiet scx_loader.service              2>/dev/null && SCX_ACTIVE=1 || true
+  if [ "$SCX_ACTIVE" -eq 0 ]; then
+    echo "SCX service not active — attempting to start..."
+    systemctl restart lenovo-v15g2-scx-server.service 2>/dev/null || \
+      systemctl restart scx_loader.service 2>/dev/null || true
+  else
+    echo "SCX service is active."
+  fi
 fi
 
 echo "========== APPLY SYSCTL + UDEV =========="
@@ -355,12 +415,22 @@ echo "========== FINAL PACKAGE STATE =========="
 dpkg -l | grep -iE 'cachyos|linux-image|linux-headers' || true
 ls -lh /boot | grep -E 'cachyos|vmlinuz|initrd' || true
 
+echo "========== SCX STATUS =========="
+systemctl status lenovo-v15g2-scx-server.service --no-pager -l | sed -n '1,60p' || true
+systemctl status scx_loader.service --no-pager -l | sed -n '1,30p' 2>/dev/null || true
+if [ -r /sys/kernel/sched_ext/state ]; then
+  echo "sched_ext state: $(cat /sys/kernel/sched_ext/state)"
+fi
+
 echo "========== FINAL NOTES =========="
 echo "Installed:   $TAG"
 echo "GRUB target: $TARGET_KERNEL"
 echo "Backup dir:  $BACKUP_DIR"
-echo "Rebooting..."
 
-echo "========== REBOOT =========="
-sync
-systemctl reboot
+if [ "$NEED_REBOOT_ONLY" -eq 2 ]; then
+  echo "Already running target kernel. Runtime tuning/SCX applied. No reboot forced."
+else
+  echo "Rebooting..."
+  sync
+  systemctl reboot
+fi
