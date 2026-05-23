@@ -77,6 +77,48 @@ oracle-a1
 tkg-builder
 ```
 
+## Quick Install (Lenovo machine)
+
+Run as root on the Lenovo machine. Downloads, installs, and enables the auto-updater in one shot:
+
+```bash
+sudo bash -c '
+  BASE=https://raw.githubusercontent.com/AmirulAndalib/lenovo-v15g2-itl-cachyos-server-edge-kernel/refs/heads/master
+  wget -qO /usr/local/sbin/lenovo-kernel-updater.sh      "$BASE/scripts/lenovo-kernel-updater.sh"
+  wget -qO /etc/systemd/system/lenovo-kernel-updater.service "$BASE/systemd/lenovo-kernel-updater.service"
+  wget -qO /etc/systemd/system/lenovo-kernel-updater.timer   "$BASE/systemd/lenovo-kernel-updater.timer"
+  chmod 700 /usr/local/sbin/lenovo-kernel-updater.sh
+  systemctl daemon-reload
+  systemctl enable --now lenovo-kernel-updater.timer
+  echo "Done. Timer status: $(systemctl is-active lenovo-kernel-updater.timer)"
+'
+```
+
+Or with `curl` if `wget` is unavailable:
+
+```bash
+sudo bash -c '
+  BASE=https://raw.githubusercontent.com/AmirulAndalib/lenovo-v15g2-itl-cachyos-server-edge-kernel/refs/heads/master
+  curl -fsSLo /usr/local/sbin/lenovo-kernel-updater.sh         "$BASE/scripts/lenovo-kernel-updater.sh"
+  curl -fsSLo /etc/systemd/system/lenovo-kernel-updater.service "$BASE/systemd/lenovo-kernel-updater.service"
+  curl -fsSLo /etc/systemd/system/lenovo-kernel-updater.timer   "$BASE/systemd/lenovo-kernel-updater.timer"
+  chmod 700 /usr/local/sbin/lenovo-kernel-updater.sh
+  systemctl daemon-reload
+  systemctl enable --now lenovo-kernel-updater.timer
+  echo "Done. Timer status: $(systemctl is-active lenovo-kernel-updater.timer)"
+'
+```
+
+After setup, trigger a manual run immediately:
+
+```bash
+sudo /usr/local/sbin/lenovo-kernel-updater.sh
+```
+
+See [What the installer does automatically](#4-what-the-installer-does-automatically) for the full list of changes applied on each run.
+
+---
+
 ## Setup
 
 ### 1. Clone and set OWNER_REPO
