@@ -63,7 +63,6 @@ purge_old_custom_kernels() {
 
   echo "  purging: ${PKGS_TO_PURGE[*]}"
   apt-get purge -y "${PKGS_TO_PURGE[@]}" || true
-  apt-get autoremove -y || true
 }
 
 msg "lenovo kernel updater"
@@ -256,9 +255,23 @@ install_scx_from_source() {
   )
 }
 
-if command -v scx_bpfland >/dev/null 2>&1; then
-  echo "scx_bpfland: $(command -v scx_bpfland)"
-else
+# update if already managed; install if missing
+if dpkg -l scx-scheds 2>/dev/null | grep -q '^ii'; then
+  apt-get install --only-upgrade -y scx-scheds scx-tools 2>/dev/null || true
+elif dpkg -l scx 2>/dev/null | grep -q '^ii'; then
+  apt-get install --only-upgrade -y scx 2>/dev/null || true
+elif [ -d /opt/scx/.git ]; then
+  REMOTE_HEAD="$(git -C /opt/scx ls-remote origin HEAD 2>/dev/null | cut -f1 || true)"
+  LOCAL_HEAD="$(git -C /opt/scx rev-parse HEAD 2>/dev/null || true)"
+  if [ -n "$REMOTE_HEAD" ] && [ "$REMOTE_HEAD" != "$LOCAL_HEAD" ]; then
+    echo "scx upstream changed ($LOCAL_HEAD -> $REMOTE_HEAD), rebuilding..."
+    install_scx_from_source || echo "warn: scx rebuild failed, keeping existing binaries"
+  else
+    echo "scx source up-to-date ($LOCAL_HEAD)"
+  fi
+fi
+
+if ! command -v scx_bpfland >/dev/null 2>&1; then
   echo "scx_bpfland not found, trying apt..."
   # scx-scheds provides scx_bpfland, scx_rusty, scx_lavd, scx_p2dq, etc.
   apt-get install -y scx-scheds scx-tools 2>/dev/null || \
@@ -267,7 +280,7 @@ else
 fi
 
 if ! command -v scx_bpfland >/dev/null 2>&1; then
-  echo "warn: scx_bpfland missing after apt install, falling back to source build"
+  echo "warn: scx_bpfland missing after install, falling back to source build"
   install_scx_from_source || echo "warn: source build failed, kernel EEVDF remains active"
 fi
 
@@ -326,7 +339,7 @@ SCX_SVC
 
 # prefer scx_loader when available (handles kernel upgrades without service restart)
 systemctl daemon-reload
-if systemctl list-unit-files scx_loader.service >/dev/null 2>&1; then
+if systemctl cat scx_loader.service >/dev/null 2>&1; then
   mkdir -p /etc/scx_loader
   cat > /etc/scx_loader/config.toml <<'SCX_CFG'
 default_sched = "scx_bpfland"
@@ -356,6 +369,7 @@ msg "applying sysctl and udev"
 sysctl --system       || true
 udevadm control --reload-rules || true
 udevadm trigger       || true
+udevadm settle --timeout=30 || true
 
 msg "configuring grub"
 
