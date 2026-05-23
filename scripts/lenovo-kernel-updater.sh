@@ -404,7 +404,7 @@ update-grub
 msg "setting grub default"
 
 TARGET_KERNEL="$(
-  ls /boot/vmlinuz-*cachyos*lenovov15g2* 2>/dev/null |
+  ls /boot/vmlinuz-*cachyos*lenovov15g2*servermax* 2>/dev/null |
     sed 's|/boot/vmlinuz-||' |
     sort -V |
     tail -n1
