@@ -106,6 +106,17 @@ if [ -f "$LAST_TAG_FILE" ] && [ "$(cat "$LAST_TAG_FILE")" = "$TAG" ]; then
   fi
 fi
 
+# Verify the specific kernel version from this tag is actually present.
+# The state file can lie if the package was never installed or was purged.
+if [ "$NEED_REBOOT_ONLY" -ne 0 ]; then
+  TAG_KVER="$(echo "$TAG" | sed 's/^v//; s/-cachyos.*//')"
+  if ! dpkg -l 2>/dev/null | grep -qE "^ii[[:space:]]+linux-image-${TAG_KVER}" && \
+     ! ls /boot/vmlinuz-"${TAG_KVER}"* 2>/dev/null | grep -q .; then
+    echo "warn: state file says $TAG installed but kernel ${TAG_KVER} not found in dpkg/boot, reinstalling"
+    NEED_REBOOT_ONLY=0
+  fi
+fi
+
 if [ "$NEED_REBOOT_ONLY" -eq 0 ]; then
   msg "downloading release assets"
   rm -rf "$WORK_DIR/assets"
@@ -384,6 +395,16 @@ if grep -q '^GRUB_SAVEDEFAULT=' /etc/default/grub; then
 else
   echo 'GRUB_SAVEDEFAULT=false' >> /etc/default/grub
 fi
+
+# direct boot, no menu (hold Shift at power-on to show GRUB when needed)
+for kv in "GRUB_TIMEOUT=0" "GRUB_TIMEOUT_STYLE=hidden"; do
+  key="${kv%%=*}"
+  if grep -q "^${key}=" /etc/default/grub; then
+    sed -i "s|^${key}=.*|${kv}|" /etc/default/grub
+  else
+    echo "$kv" >> /etc/default/grub
+  fi
+done
 
 # deduplicate existing params then append ours
 GRUB_CMDLINE_ADD="i915.enable_guc=3 zswap.enabled=1 zswap.shrinker_enabled=1 zswap.compressor=zstd zswap.max_pool_percent=20 zswap.zpool=z3fold mitigations=auto intel_pstate=active"
