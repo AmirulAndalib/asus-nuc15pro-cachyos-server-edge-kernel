@@ -25,6 +25,7 @@ msg() { echo ":: $*"; }
 # Purge all other cachyos-lenovov15g2 image and header packages.
 # Must run before update-initramfs to avoid regenerating for kernels about to be removed.
 purge_old_custom_kernels() {
+  local target_kver="$1"
   msg "purging old custom kernels"
 
   mapfile -t ALL_CUSTOM_IMG < <(
@@ -36,13 +37,23 @@ purge_old_custom_kernels() {
     return 0
   fi
 
-  KEEP_NEWEST="${ALL_CUSTOM_IMG[-1]}"
+  # Keep the kernel that matches the current release version, not the highest sort order.
+  # RC kernels (e.g. 7.1.0-rc2) sort higher than stable (7.0.10) but are not the target.
+  KEEP_TARGET=""
+  for pkg in "${ALL_CUSTOM_IMG[@]}"; do
+    if echo "$pkg" | grep -qF "$target_kver"; then
+      KEEP_TARGET="$pkg"
+      break
+    fi
+  done
+  [ -z "$KEEP_TARGET" ] && KEEP_TARGET="${ALL_CUSTOM_IMG[-1]}"
+
   RUNNING_PKG="linux-image-$(uname -r)"
 
   PKGS_TO_PURGE=()
   for pkg in "${ALL_CUSTOM_IMG[@]}"; do
-    if [ "$pkg" = "$KEEP_NEWEST" ]; then
-      echo "  keep (newest):  $pkg"
+    if [ "$pkg" = "$KEEP_TARGET" ]; then
+      echo "  keep (target):  $pkg"
       continue
     fi
     if [ "$pkg" = "$RUNNING_PKG" ]; then
@@ -85,7 +96,9 @@ if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
   exit 1
 fi
 
-echo "latest release: $TAG"
+# upstream kernel version extracted from tag: v7.0.10-cachyos-... -> 7.0.10
+TAG_KVER="$(echo "$TAG" | sed 's/^v//; s/-cachyos.*//')"
+echo "latest release: $TAG ($TAG_KVER)"
 
 LAST_TAG_FILE="$STATE_DIR/last-installed-tag"
 
@@ -109,7 +122,6 @@ fi
 # Verify the specific kernel version from this tag is actually present.
 # The state file can lie if the package was never installed or was purged.
 if [ "$NEED_REBOOT_ONLY" -ne 0 ]; then
-  TAG_KVER="$(echo "$TAG" | sed 's/^v//; s/-cachyos.*//')"
   if ! dpkg -l 2>/dev/null | grep -qE "^ii[[:space:]]+linux-image-${TAG_KVER}" && \
      ! ls /boot/vmlinuz-"${TAG_KVER}"* 2>/dev/null | grep -q .; then
     echo "warn: state file says $TAG installed but kernel ${TAG_KVER} not found in dpkg/boot, reinstalling"
@@ -430,7 +442,7 @@ if [ -f /etc/initramfs-tools/modules ]; then
   grep -qxF "lz4" /etc/initramfs-tools/modules || echo "lz4" >> /etc/initramfs-tools/modules
 fi
 
-purge_old_custom_kernels
+purge_old_custom_kernels "$TAG_KVER"
 
 msg "updating initramfs and grub"
 update-initramfs -u -k all
