@@ -450,6 +450,13 @@ grep -E \
   .config || true
 
 msg "build"
+# Parallel jobs default to nproc. On this Ampere A1 builder cores and RAM scale
+# together (~6 GB/core), so nproc is the correct default - and it is NOT what
+# OOM-kills the build, since the pahole/BTF peak is single-process. BUILD_JOBS
+# lets a more memory-constrained runner dial parallelism down without edits.
+JOBS="${BUILD_JOBS:-$(nproc)}"
+echo "build jobs: ${JOBS} (nproc=$(nproc), BUILD_JOBS=${BUILD_JOBS:-unset})"
+
 # ARCH=x86_64         - cross-target (container is ARM64)
 # LLVM=1 LLVM_IAS=1   - full LLVM toolchain
 # CROSS_COMPILE       - GNU prefix for any non-LLVM packaging tools
@@ -465,7 +472,7 @@ make ARCH=x86_64 LLVM=1 LLVM_IAS=1 \
   KDEB_PKGVERSION="${KVER}-${PKGREL}-cachyos" \
   KBUILD_BUILD_USER=github \
   KBUILD_BUILD_HOST=actions \
-  -j"$(nproc)" bindeb-pkg
+  -j"${JOBS}" bindeb-pkg
 
 msg "collecting release assets"
 rm -rf "$DIST"

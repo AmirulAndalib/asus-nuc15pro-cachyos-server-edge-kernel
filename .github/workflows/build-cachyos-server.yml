@@ -27,7 +27,7 @@ jobs:
           sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" 2>/dev/null || true
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Show runner info
         run: |
@@ -104,6 +104,75 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Free memory and ensure swap
+        if: steps.preflight.outputs.skip != 'true'
+        run: |
+          set -uo pipefail
+
+          echo "== before =="
+          free -h || true
+          swapon --show || true
+
+          # Reclaim RAM from a builder container leaked by a previously
+          # OOM-killed run. `docker run --rm` does NOT clean up when the CLI is
+          # SIGKILLed, so a zombie container can hold gigabytes of RSS across
+          # runs - this is the most likely source of the high baseline usage.
+          docker ps -aq --filter ancestor=cachyos-builder:latest \
+            | xargs -r docker rm -f || true
+          docker container prune -f || true
+
+          # Drop reclaimable page cache / dentries. Does not touch anonymous or
+          # tmpfs pages, so it is safe and non-destructive.
+          sudo sync || true
+          echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null || true
+
+          # This builder reports 0 B swap. The BTF/pahole step (pahole reads the
+          # full DWARF of a DEBUG_INFO + ThinLTO vmlinux into RAM) and the
+          # ThinLTO link spike past available RAM; with no swap the kernel
+          # OOM-kills the build (exit 137 = SIGKILL). A swapfile lets those
+          # transient peaks spill to disk instead. tmpfs pages are swap-backed
+          # too, so this also relieves the high baseline usage.
+          if [ -z "$(swapon --show=NAME --noheadings)" ]; then
+            SWAPFILE="/swapfile-cachyos-build"
+            # Generous on purpose: a too-small swap means another ~3 h OOM retry,
+            # while disk is cheap (~131 G free). 32 G covers a full-DEBUG_INFO +
+            # ThinLTO pahole/BTF peak even if the high baseline is not reclaimed,
+            # and still leaves ~99 G for the kernel build tree and ccache.
+            SWAP_GB=32
+            echo "no active swap - creating ${SWAP_GB}G at ${SWAPFILE}"
+            if [ ! -f "$SWAPFILE" ]; then
+              sudo fallocate -l "${SWAP_GB}G" "$SWAPFILE" \
+                || sudo dd if=/dev/zero of="$SWAPFILE" bs=1M count=$((SWAP_GB * 1024)) status=none
+              sudo chmod 600 "$SWAPFILE"
+              sudo mkswap "$SWAPFILE"
+            fi
+            # A fallocate'd swapfile can be rejected with "has holes" on some
+            # kernels; rebuild it hole-free with dd in that case.
+            if ! sudo swapon "$SWAPFILE"; then
+              echo "swapon rejected the file - rebuilding hole-free with dd"
+              sudo swapoff "$SWAPFILE" 2>/dev/null || true
+              sudo rm -f "$SWAPFILE"
+              sudo dd if=/dev/zero of="$SWAPFILE" bs=1M count=$((SWAP_GB * 1024)) status=none
+              sudo chmod 600 "$SWAPFILE"
+              sudo mkswap "$SWAPFILE"
+              sudo swapon "$SWAPFILE"
+            fi
+          else
+            echo "swap already active - leaving as-is"
+          fi
+
+          echo "== after =="
+          free -h || true
+          swapon --show || true
+          df -h / || true
+
+          # Fail fast if we still have no swap - a no-swap build will just OOM
+          # again after wasting hours, so a clear failure here is the better signal.
+          if [ -z "$(swapon --show=NAME --noheadings)" ]; then
+            echo "error: no active swap after setup - build would likely OOM" >&2
+            exit 1
+          fi
+
       - name: Build builder image
         if: steps.preflight.outputs.skip != 'true'
         run: |
@@ -134,6 +203,36 @@ jobs:
             -e CACHY_VARIANT="linux-cachyos-server" \
             cachyos-builder:latest \
             bash /work/scripts/build-cachyos-server.sh
+
+      - name: Diagnostics on failure
+        if: failure() && steps.preflight.outputs.skip != 'true'
+        run: |
+          echo "== memory / swap =="
+          free -h || true
+          swapon --show || true
+
+          echo "== kernel OOM messages =="
+          # Confirms (or rules out) the OOM-killer as the cause of an exit-137
+          # build. If this prints "Out of memory: Killed process ... pahole/ld.lld"
+          # the swapfile size likely needs raising; if empty, look elsewhere.
+          { sudo dmesg 2>/dev/null || dmesg 2>/dev/null || true; } \
+            | grep -iE 'out of memory|killed process|oom-kill' | tail -40 || true
+
+          echo "== disk =="
+          df -h || true
+
+          echo "== containers =="
+          docker ps -a || true
+
+          {
+            echo "### Build failed - diagnostics"
+            echo '```'
+            free -h 2>&1 || true
+            swapon --show 2>&1 || true
+            { sudo dmesg 2>/dev/null || dmesg 2>/dev/null || true; } \
+              | grep -iE 'out of memory|killed process|oom-kill' | tail -20 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify release assets
         if: steps.preflight.outputs.skip != 'true'
@@ -177,7 +276,7 @@ jobs:
           fi
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always() && steps.preflight.outputs.skip != 'true'
         with:
           name: cachyos-servermax-debs-run${{ github.run_number }}-${{ github.run_attempt }}
