@@ -2,6 +2,13 @@ name: Build ASUS NUC 15 Pro CachyOS ServerMax Kernel
 
 on:
   workflow_dispatch:
+    inputs:
+      force:
+        description: 'Force build even if version already released (use after repo transitions)'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
   schedule:
     - cron: "0 9 * * *"
 
@@ -92,7 +99,11 @@ jobs:
             --json tagName \
             --jq '.[].tagName' 2>/dev/null || true)"
 
-          if echo "$RECENT" | grep -q "v${KVER}-cachyos-servermax-x86_64v3-"; then
+          FORCE_BUILD="${{ github.event.inputs.force }}"
+          if [ "$FORCE_BUILD" = "true" ]; then
+            echo "FORCE: skipping version check, building regardless"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          elif echo "$RECENT" | grep -q "v${KVER}-cachyos-servermax-x86_64v3-"; then
             echo "SKIP: $KVER already has a servermax release."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             {
