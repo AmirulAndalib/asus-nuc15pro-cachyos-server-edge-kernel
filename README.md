@@ -39,45 +39,52 @@ Tracks `linux-cachyos-server`, CachyOS stable server variant with server-optimiz
 | Async I/O              | io_uring enabled                                                        |
 | Network offload        | TLS kernel offload, XDP sockets                                         |
 | Block layer            | BLK_WBT writeback throttling, NVMe multipath                            |
-| NVMe power states      | Disabled (`nvme_core.default_ps_max_latency_us=0` — Gen4/Gen5 max perf) |
-| Dual NIC               | `rp_filter=2` (loose) — WiFi 7 + 2.5GbE simultaneous use               |
+| NVMe power states      | Disabled (`nvme_core.default_ps_max_latency_us=0`, Gen4/Gen5 max perf)  |
+| Dual NIC               | `rp_filter=2` (loose): WiFi 7 + 2.5GbE simultaneous use                |
 | GPU driver             | `xe` (Arc 130T Xe2-LPG, GuC auto-enabled); `i915` kept as fallback     |
-| IRQ affinity           | `threadirqs` — spread IRQs across P/E/LP-E cores                        |
+| IRQ affinity           | `threadirqs`: spread IRQs across P/E/LP-E cores                         |
 | Cgroup v2              | Full stack (CFS_BANDWIDTH, all controllers)                             |
 | CRIU                   | CHECKPOINT_RESTORE enabled                                              |
 | PCIe                   | ASPM performance mode + PTM                                             |
 | RCU lazy               | Disabled (AC-only, no power-saving bias)                                |
 | BTF                    | Enabled (`/sys/kernel/btf/vmlinux` for scx tools)                      |
-| Debug info             | DWARF (toolchain default) — required for BTF                            |
+| Debug info             | DWARF (toolchain default), required for BTF                             |
+| CPU power limits       | RAPL PL1=65W sustained, PL2=90W burst 60s (120W AC adapter)            |
+| Fan control            | ACPI platform profile: `performance`; ASUS WMI EC interface             |
+| USB autosuspend        | Disabled (`usbcore.autosuspend=-1`): full power all ports               |
+| WiFi power save        | Disabled (`iwlwifi power_save=0`, `iwlmvm power_scheme=1`)              |
+| energy_perf_bias       | 0 (no microarchitecture power-saving bias on any core)                  |
+| NVMe queue depth       | `nr_requests=1023` per namespace at boot                                |
+| igc ring buffers       | rx=4096 tx=4096 (I226-V 2.5GbE max throughput)                         |
 
 ## SCX Scheduler Notes (Arrow Lake-H)
 
-Arrow Lake-H has 4P (Lion Cove) + 8E (Skymont) + 2LP-E (Crestmont) cores with Intel Thread Director + HFI — heterogeneous topology.
+Arrow Lake-H has 4P (Lion Cove) + 8E (Skymont) + 2LP-E (Crestmont) cores with Intel Thread Director + HFI, heterogeneous topology.
 
 - **Primary**: `scx_bpfland -s 20000 -S` (20 ms slice, strict-affinity server tasks)
 - **Fallback chain**: `scx_p2dq` → `scx_bpfland` (no args) → `scx_rusty` → `scx_beerland` → `scx_lavd`
 
 `scx_lavd` is topology-aware for P/E/LP-E but has a documented E-core over-prioritization issue (observed on the sibling Lunar Lake architecture). It remains as a late fallback until upstream resolves it.
 
-`scx_loader` is preferred when available — it handles kernel upgrades without a service restart.
+`scx_loader` is preferred when available; it handles kernel upgrades without a service restart.
 
 ## Pipeline
 
-Builds on a self-hosted Oracle Ampere A1 (AArch64) runner. LLVM cross-compiles natively — no QEMU emulation.
+Builds on a self-hosted Oracle Ampere A1 (AArch64) runner. LLVM cross-compiles natively, no QEMU emulation.
 
 ```text
 Oracle A1 (ARM64) -> clang --target=x86_64-linux-gnu -> .deb (amd64)
 ```
 
-Schedule: daily at 09:00 UTC. Pre-flight check compares upstream `pkgver` against recent releases — **skips the build if the kernel version already exists** (no duplicate releases).
+Schedule: daily at 09:00 UTC. Pre-flight check compares upstream `pkgver` against recent releases; **skips the build if the kernel version already exists** (no duplicate releases).
 
 ### Release assets
 
-- `linux-image-*.deb` — kernel image and modules
-- `linux-headers-*.deb` — headers for DKMS / out-of-tree modules
-- `linux-libc-dev_*.deb` — userspace kernel headers
-- `SHA256SUMS` — SHA-256 checksums for all packages
-- `BUILD_MANIFEST` — compiler version, CachyOS commit, build timestamp, full config metadata
+- `linux-image-*.deb`: kernel image and modules
+- `linux-headers-*.deb`: headers for DKMS / out-of-tree modules
+- `linux-libc-dev_*.deb`: userspace kernel headers
+- `SHA256SUMS`: SHA-256 checksums for all packages
+- `BUILD_MANIFEST`: compiler version, CachyOS commit, build timestamp, full config metadata
 
 Release tag format: `v{KERNEL}-cachyos-servermax-x86_64v3-{YYYYMMDD}.{RUN}`
 
@@ -187,7 +194,7 @@ systemctl daemon-reload
 systemctl enable --now nuc15pro-kernel-updater.timer
 ```
 
-Timer fires daily at 04:00 local time. The installer is idempotent — records the installed tag in `/var/lib/nuc15pro-kernel-updater/last-installed-tag` and skips reinstall if already on that release.
+Timer fires daily at 04:00 local time. The installer is idempotent: records the installed tag in `/var/lib/nuc15pro-kernel-updater/last-installed-tag` and skips reinstall if already on that release.
 
 ### 4. What the installer does automatically
 
@@ -197,15 +204,17 @@ On first run and each new release, the installer handles everything without manu
 - Installs kernel packages via `dpkg`
 - Installs `linux-image-generic` as fallback
 - Writes `/etc/modprobe.d/xe-arc130t.conf` (comment-only; `xe` driver needs no options)
+- Writes `/etc/modprobe.d/nuc15pro-wifi.conf` (`iwlwifi power_save=0`, `iwlmvm power_scheme=1`)
 - Writes `/etc/sysctl.d/99-nuc15pro-servermax.conf` (BBR+FQ, large buffers, inotify, vm tuning, `rp_filter=2` for dual NIC)
 - Writes `/etc/udev/rules.d/60-nuc15pro-ioschedulers.rules` (ADIOS for SSDs/NVMe, BFQ for HDDs)
 - Installs and enables `/etc/systemd/system/nuc15pro-servermax-cpupower.service` (performance governor + EPP for all P/E/LP-E cores)
+- Installs and enables `/etc/systemd/system/nuc15pro-servermax-power.service` (RAPL PL1/PL2, platform profile, energy_perf_bias=0, NVMe nr_requests=1023, igc ring buffers)
 - Installs `scx-scheds`/`scx-tools` (sched_ext userspace schedulers)
 - Enables `scx_loader` with `scx_bpfland` in Server mode (or direct service as fallback)
-- Updates GRUB cmdline: `threadirqs nvme_core.default_ps_max_latency_us=0 zswap.enabled=1 zswap.shrinker_enabled=1 zswap.compressor=zstd zswap.max_pool_percent=20 zswap.zpool=z3fold mitigations=auto intel_pstate=active`
+- Updates GRUB cmdline: `threadirqs usbcore.autosuspend=-1 nvme_core.default_ps_max_latency_us=0 zswap.enabled=1 zswap.shrinker_enabled=1 zswap.compressor=zstd zswap.max_pool_percent=20 zswap.zpool=z3fold mitigations=auto intel_pstate=active`
 - Removes stale `i915.enable_guc=3` if present from previous Lenovo config
 - Purges all previous custom `cachyos-nuc15pro` kernels, keeping only the newest installed + the currently running kernel (panic fallback)
-- Adds `lz4` to initramfs modules
+- Adds `lz4` and `asus_wmi` to initramfs modules
 - Runs `update-initramfs` + `update-grub`
 - Sets the new kernel as GRUB default (hidden menu, Shift to show)
 - Reboots
@@ -242,6 +251,35 @@ To route specific traffic via WiFi:
 ```bash
 ip route add <destination> dev <wifi-iface> table 200
 ip rule add from <wifi-ip> table 200
+```
+
+### 7. Power Limits and Fan Control
+
+The NUC 15 Pro runs on a 120W AC adapter. The `nuc15pro-servermax-power.service` applies at boot:
+
+**RAPL power limits** (via `/sys/class/powercap/intel-rapl/`):
+
+- PL1 = 65W sustained (long-duration)
+- PL2 = 90W burst, 60s window
+- Readback logged to journal to confirm BIOS did not lock the MSR
+
+**ACPI platform profile**: writes `performance` to `/sys/firmware/acpi/platform_profile`. This signals the EC/BIOS to use the performance fan curve.
+
+**ASUS WMI** (`CONFIG_ASUS_WMI=m`): exposes the NUC 15 Pro EC interface for fan boost and platform profile control.
+
+To check current state:
+
+```bash
+cat /sys/firmware/acpi/platform_profile
+cat /sys/class/powercap/intel-rapl/intel-rapl:0/constraint_0_power_limit_uw
+cat /sys/class/powercap/intel-rapl/intel-rapl:0/constraint_1_power_limit_uw
+sensors  # requires lm-sensors
+```
+
+To list available platform profiles:
+
+```bash
+cat /sys/firmware/acpi/platform_profile_choices
 ```
 
 ## Manual Build

@@ -320,7 +320,7 @@ CONFIG_LZ4_DECOMPRESS=y
 CONFIG_Z3FOLD=y
 CONFIG_ZSMALLOC=y
 
-# ---- Intel Arc 130T (Xe2-LPG) iGPU — Arrow Lake (xe driver primary) ----
+# ---- Intel Arc 130T (Xe2-LPG) iGPU, Arrow Lake (xe driver primary) ----
 # xe is the modern driver for Xe2+ GPUs (Arc 130T, device 0x7D51)
 # Keep i915 built as module for DRM subsystem compat / future fallback
 CONFIG_DRM_XE=m
@@ -341,7 +341,7 @@ CONFIG_INTEL_SPEED_SELECT_INTERFACE=m
 # ---- Wi-Fi: Intel BE201 (Wi-Fi 7, 320 MHz, MLO) ----
 CONFIG_IWLWIFI=m
 CONFIG_IWLMVM=m
-# ME-over-WiFi (CSME firmware channel) — optional, soft check
+# ME-over-WiFi (CSME firmware channel), optional, soft check
 CONFIG_IWLMEI=m
 
 # ---- Sound: Intel SOF / SoundWire / HDA (SOF TGL config covers Arrow Lake) ----
@@ -388,6 +388,26 @@ CONFIG_BLK_DEV_NVME=m
 CONFIG_NVME_VERBOSE_ERRORS=y
 # NVMe TCP for remote storage (optional)
 CONFIG_NVME_TCP=m
+
+# ---- ACPI platform profile (performance fan curve via EC/BIOS) ----
+CONFIG_ACPI_PLATFORM_PROFILE=y
+
+# ---- ASUS WMI (fan boost mode, platform profile, NUC 15 Pro EC interface) ----
+CONFIG_ASUS_WMI=m
+
+# ---- Hardware monitoring (CPU temps, fan speeds) ----
+CONFIG_HWMON=y
+CONFIG_SENSORS_CORETEMP=m
+CONFIG_SENSORS_NCT6775=m
+CONFIG_SENSORS_NCT6683=m
+
+# ---- Intel RAPL / PowerCap (PL1/PL2 runtime control via sysfs) ----
+CONFIG_POWERCAP=y
+CONFIG_INTEL_RAPL_CORE=m
+
+# ---- CPU frequency governors ----
+CONFIG_CPU_FREQ_GOV_PERFORMANCE=y
+CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y
 
 # ---- Misc performance ----
 CONFIG_SCHED_AUTOGROUP=y
@@ -467,7 +487,13 @@ _warn_ym CONFIG_NVME_MULTIPATH
 _warn_ym CONFIG_BLK_WBT
 _warn_ym CONFIG_CHECKPOINT_RESTORE
 _warn_ym CONFIG_INTEL_RAPL
-# NUC 15 Pro / Arrow Lake specific — soft checks (CachyOS base config may vary)
+_warn_ym CONFIG_POWERCAP
+_warn_ym CONFIG_INTEL_RAPL_CORE
+_warn_ym CONFIG_ACPI_PLATFORM_PROFILE
+_warn_ym CONFIG_ASUS_WMI
+_warn_ym CONFIG_HWMON
+_warn_ym CONFIG_SENSORS_CORETEMP
+# NUC 15 Pro / Arrow Lake specific, soft checks (CachyOS base config may vary)
 _warn_ym CONFIG_DRM_XE
 _warn_ym CONFIG_DRM_I915
 _warn_ym CONFIG_IGC
@@ -560,6 +586,9 @@ GPU_DRIVER=xe-arc130t-xe2lpg
 ETH_DRIVER=igc-i226v-2500mbps
 NPU=ivpu-ai-boost-13tops
 WIFI=iwlwifi-be201-wifi7
+POWER_LIMITS=rapl-pl1-65w-pl2-90w-60s
+PLATFORM_PROFILE=performance
+USB_AUTOSUSPEND=disabled
 MANIFEST
 
 cat BUILD_MANIFEST

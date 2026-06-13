@@ -82,7 +82,7 @@ uname -a
 
 msg "ensuring tools"
 apt-get update -qq
-apt-get install -y curl jq ca-certificates
+apt-get install -y curl jq ca-certificates ethtool lm-sensors
 
 msg "fetching latest release"
 # Use list endpoint, not /releases/latest, so RC prereleases are included
@@ -191,13 +191,19 @@ BACKUP_DIR="$STATE_DIR/backups/$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$BACKUP_DIR"
 cp -a /etc/default/grub "$BACKUP_DIR/grub.bak" 2>/dev/null || true
 
-# Intel Arc 130T (Xe2-LPG) — xe driver, no i915 options needed
+# Intel Arc 130T (Xe2-LPG): xe driver, no i915 options needed
 # xe driver auto-enables GuC firmware submission; no modprobe options required
 install -Dm644 /dev/stdin /etc/modprobe.d/xe-arc130t.conf <<'MODPROBE'
-# Intel Arc 130T (Arrow Lake Xe2-LPG) — xe driver
+# Intel Arc 130T (Arrow Lake Xe2-LPG): xe driver
 # GuC firmware submission is enabled by default in xe; no options needed.
 # i915 is kept as fallback module but Arc 130T will bind to xe at boot.
 MODPROBE
+
+# Intel Wi-Fi 7 BE201: disable power save for max throughput on AC
+install -Dm644 /dev/stdin /etc/modprobe.d/nuc15pro-wifi.conf <<'MODPROBE_WIFI'
+options iwlwifi power_save=0
+options iwlmvm power_scheme=1
+MODPROBE_WIFI
 
 # server sysctl tuning
 install -Dm644 /dev/stdin /etc/sysctl.d/99-nuc15pro-servermax.conf <<'SYSCTL'
@@ -229,14 +235,14 @@ net.core.netdev_max_backlog        = 16384
 # Dual NIC: loose reverse-path filter allows multi-homed WiFi+ETH simultaneously.
 # rp_filter=2 (loose) instead of 1 (strict) so both NICs can receive traffic
 # when routing via the other interface (e.g. default via eth, DNS via wifi).
-# NOT setting ip_forward — this is a workstation, not a router.
+# NOT setting ip_forward: this is a workstation, not a router.
 net.ipv4.conf.all.rp_filter        = 2
 net.ipv4.conf.default.rp_filter    = 2
 
 # NVMe: disable power-saving latency states for Gen4/Gen5 max throughput
 # (mirrors kernel cmdline nvme_core.default_ps_max_latency_us=0)
 # This is belt-and-suspenders; cmdline takes effect earlier at boot.
-# dev.nvme is not a sysctl namespace — NVMe PS is controlled via cmdline only.
+# dev.nvme is not a sysctl namespace; NVMe PS is controlled via cmdline only.
 SYSCTL
 
 # I/O scheduler: ADIOS for SSDs/NVMe, BFQ for spinning disks
@@ -267,6 +273,36 @@ SERVICE
 
 systemctl daemon-reload
 systemctl enable nuc15pro-servermax-cpupower.service || true
+
+# Runtime power tuning: RAPL PL1/PL2, platform profile, energy_perf_bias, NVMe queue depth, igc rings
+install -Dm644 /dev/stdin /etc/systemd/system/nuc15pro-servermax-power.service <<'POWER_SVC'
+[Unit]
+Description=NUC 15 Pro ServerMax runtime power limits and device tuning
+After=multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# ACPI platform profile: request performance fan curve from EC/BIOS
+ExecStart=/bin/sh -c '[ -f /sys/firmware/acpi/platform_profile ] && echo performance > /sys/firmware/acpi/platform_profile || true'
+# Intel RAPL on 120W AC: PL1=65W sustained, PL2=90W burst 60s
+# BIOS may lock the MSR; read back actual value after write to confirm
+ExecStart=/bin/sh -c 'p=/sys/class/powercap/intel-rapl/intel-rapl:0; [ -d "$p" ] && printf 65000000 > "$p/constraint_0_power_limit_uw" && echo "RAPL PL1=$(cat $p/constraint_0_power_limit_uw)uW" || true'
+ExecStart=/bin/sh -c 'p=/sys/class/powercap/intel-rapl/intel-rapl:0; [ -d "$p" ] && printf 90000000 > "$p/constraint_1_power_limit_uw" && echo "RAPL PL2=$(cat $p/constraint_1_power_limit_uw)uW" || true'
+ExecStart=/bin/sh -c 'p=/sys/class/powercap/intel-rapl/intel-rapl:0; [ -d "$p" ] && printf 60000000 > "$p/constraint_1_time_window_us" || true'
+# energy_perf_bias=0: no microarchitecture power-saving bias on any core
+ExecStart=/bin/sh -c 'for b in /sys/devices/system/cpu/cpu*/power/energy_perf_bias; do [ -w "$b" ] && printf 0 > "$b"; done; true'
+# NVMe: maximize request queue depth per namespace for Gen4/Gen5 throughput
+ExecStart=/bin/sh -c 'for q in /sys/block/nvme*/queue/nr_requests; do [ -w "$q" ] && printf 1023 > "$q"; done; true'
+# igc (I226-V 2.5GbE): maximize ring buffers for throughput
+ExecStart=/bin/sh -c 'iface=$(ls /sys/class/net/ 2>/dev/null | grep -m1 "^e" || true); [ -n "$iface" ] && ethtool -G "$iface" rx 4096 tx 4096 2>/dev/null || true'
+
+[Install]
+WantedBy=multi-user.target
+POWER_SVC
+
+systemctl daemon-reload
+systemctl enable nuc15pro-servermax-power.service || true
 
 msg "installing sched_ext schedulers"
 
@@ -439,15 +475,15 @@ done
 
 # threadirqs: spread interrupts across P/E/LP-E cores for better I/O latency
 # nvme_core.default_ps_max_latency_us=0: disable NVMe power states (Gen4/Gen5 max throughput)
-# No i915.enable_guc=3 — Arc 130T uses xe driver, not i915
-GRUB_CMDLINE_ADD="threadirqs nvme_core.default_ps_max_latency_us=0 zswap.enabled=1 zswap.shrinker_enabled=1 zswap.compressor=zstd zswap.max_pool_percent=20 zswap.zpool=z3fold mitigations=auto intel_pstate=active"
+# No i915.enable_guc=3: Arc 130T uses xe driver, not i915
+GRUB_CMDLINE_ADD="threadirqs usbcore.autosuspend=-1 nvme_core.default_ps_max_latency_us=0 zswap.enabled=1 zswap.shrinker_enabled=1 zswap.compressor=zstd zswap.max_pool_percent=20 zswap.zpool=z3fold mitigations=auto intel_pstate=active"
 
 if grep -q '^GRUB_CMDLINE_LINUX_DEFAULT=' /etc/default/grub; then
   CURRENT="$(grep '^GRUB_CMDLINE_LINUX_DEFAULT=' /etc/default/grub | \
     sed -E 's/^GRUB_CMDLINE_LINUX_DEFAULT="(.*)"/\1/')"
 
   # Remove stale Lenovo/Tiger Lake params and any we're about to re-add
-  for param in i915.enable_guc threadirqs nvme_core.default_ps_max_latency_us \
+  for param in i915.enable_guc threadirqs usbcore.autosuspend nvme_core.default_ps_max_latency_us \
                zswap.enabled zswap.shrinker_enabled zswap.compressor \
                zswap.max_pool_percent zswap.zpool rcutree.enable_rcu_lazy \
                mitigations intel_pstate; do
@@ -463,6 +499,7 @@ fi
 
 if [ -f /etc/initramfs-tools/modules ]; then
   grep -qxF "lz4" /etc/initramfs-tools/modules || echo "lz4" >> /etc/initramfs-tools/modules
+  grep -qxF "asus_wmi" /etc/initramfs-tools/modules || echo "asus_wmi" >> /etc/initramfs-tools/modules
 fi
 
 purge_old_custom_kernels "$TAG_KVER"
@@ -516,6 +553,17 @@ ls -lh /boot | grep -E 'cachyos|vmlinuz|initrd' || true
 systemctl status nuc15pro-scx-server.service --no-pager -l | head -60 || true
 systemctl status scx_loader.service --no-pager -l | head -30 2>/dev/null || true
 [ -r /sys/kernel/sched_ext/state ] && echo "sched_ext: $(cat /sys/kernel/sched_ext/state)"
+
+# RAPL power limits readback: confirm BIOS didn't lock/override our writes
+if [ -d /sys/class/powercap/intel-rapl/intel-rapl:0 ]; then
+  p=/sys/class/powercap/intel-rapl/intel-rapl:0
+  echo "rapl pl1:   $(cat $p/constraint_0_power_limit_uw)uW"
+  echo "rapl pl2:   $(cat $p/constraint_1_power_limit_uw)uW"
+  echo "rapl tw:    $(cat $p/constraint_1_time_window_us)us"
+else
+  echo "rapl:       sysfs not available (CONFIG_POWERCAP/INTEL_RAPL_CORE not loaded?)"
+fi
+[ -r /sys/firmware/acpi/platform_profile ] && echo "platform:   $(cat /sys/firmware/acpi/platform_profile)" || true
 
 echo "installed:  $TAG"
 echo "kernel:     $TARGET_KERNEL"
