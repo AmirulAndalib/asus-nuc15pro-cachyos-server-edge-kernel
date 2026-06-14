@@ -24,17 +24,13 @@ concurrency:
 
 jobs:
   build:
-    name: Build CachyOS ServerMax kernel for NUC 15 Pro, ARM64 cross-compile to x86-64-v3 amd64
-    runs-on: [self-hosted, Linux, ARM64, oracle-a1, tkg-builder]
-    timeout-minutes: 720
+    name: Build CachyOS ServerMax kernel for NUC 15 Pro, native x86-64-v3 amd64
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
 
     steps:
-      - name: Fix root-owned files from prior build
-        run: |
-          sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" 2>/dev/null || true
-
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@main
 
       - name: Show runner info
         run: |
@@ -115,6 +111,16 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Free disk space
+        if: steps.preflight.outputs.skip != 'true'
+        uses: rokibhasansagar/slimhub_actions@main
+        with:
+          retain: "compiler_gcc,docker_buildkit"
+
+      - name: Prune Docker image cache
+        if: steps.preflight.outputs.skip != 'true'
+        run: docker image prune -af
+
       - name: Free memory and ensure swap
         if: steps.preflight.outputs.skip != 'true'
         run: |
@@ -124,31 +130,20 @@ jobs:
           free -h || true
           swapon --show || true
 
-          # Reclaim RAM from a builder container leaked by a previously
-          # OOM-killed run. `docker run --rm` does NOT clean up when the CLI is
-          # SIGKILLed, so a zombie container can hold gigabytes of RSS across
-          # runs - this is the most likely source of the high baseline usage.
-          docker ps -aq --filter ancestor=cachyos-builder:latest \
-            | xargs -r docker rm -f || true
-          docker container prune -f || true
-
           # Drop reclaimable page cache / dentries. Does not touch anonymous or
           # tmpfs pages, so it is safe and non-destructive.
           sudo sync || true
           echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null || true
 
-          # This builder reports 0 B swap. The BTF/pahole step (pahole reads the
-          # full DWARF of a DEBUG_INFO + ThinLTO vmlinux into RAM) and the
-          # ThinLTO link spike past available RAM; with no swap the kernel
-          # OOM-kills the build (exit 137 = SIGKILL). A swapfile lets those
-          # transient peaks spill to disk instead. tmpfs pages are swap-backed
-          # too, so this also relieves the high baseline usage.
+          # The BTF/pahole step (pahole reads the full DWARF of a DEBUG_INFO +
+          # ThinLTO vmlinux into RAM) and the ThinLTO link spike past available
+          # RAM; with no swap the kernel OOM-kills the build (exit 137 = SIGKILL).
+          # A swapfile lets those transient peaks spill to disk instead. tmpfs
+          # pages are swap-backed too, so this also relieves high baseline usage.
           if [ -z "$(swapon --show=NAME --noheadings)" ]; then
-            SWAPFILE="/swapfile-cachyos-build"
-            # Generous on purpose: a too-small swap means another ~3 h OOM retry,
-            # while disk is cheap (~131 G free). 32 G covers a full-DEBUG_INFO +
-            # ThinLTO pahole/BTF peak even if the high baseline is not reclaimed,
-            # and still leaves ~99 G for the kernel build tree and ccache.
+            SWAPFILE="/mnt/swapfile-cachyos-build"
+            # 32 G covers the full DEBUG_INFO + ThinLTO pahole/BTF peak on a
+            # 16 GB GHA ubuntu-latest runner while still leaving plenty of disk.
             SWAP_GB=32
             echo "no active swap - creating ${SWAP_GB}G at ${SWAPFILE}"
             if [ ! -f "$SWAPFILE" ]; then
@@ -184,13 +179,30 @@ jobs:
             exit 1
           fi
 
+      - name: Restore ccache
+        if: steps.preflight.outputs.skip != 'true'
+        uses: actions/cache@main
+        with:
+          path: ~/.cache/ccache-cachyos
+          key: ccache-${{ runner.os }}-x86_64v3-${{ steps.preflight.outputs.kver }}
+          restore-keys: |
+            ccache-${{ runner.os }}-x86_64v3-
+            ccache-${{ runner.os }}-
+
+      - name: Set up Docker Buildx
+        if: steps.preflight.outputs.skip != 'true'
+        uses: docker/setup-buildx-action@main
+
       - name: Build builder image
         if: steps.preflight.outputs.skip != 'true'
-        run: |
-          docker build \
-            -t cachyos-builder:latest \
-            -f Dockerfile.builder \
-            .
+        uses: docker/build-push-action@main
+        with:
+          context: .
+          file: Dockerfile.builder
+          tags: cachyos-builder:latest
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Build kernel
         if: steps.preflight.outputs.skip != 'true'
@@ -208,7 +220,7 @@ jobs:
             -v "$CCACHE_HOST:/ccache" \
             -w /work \
             -e CCACHE_DIR=/ccache \
-            -e CCACHE_MAXSIZE=30G \
+            -e CCACHE_MAXSIZE=5G \
             -e HOST_UID="$(id -u)" \
             -e HOST_GID="$(id -g)" \
             -e CACHY_VARIANT="linux-cachyos-server" \
@@ -287,7 +299,7 @@ jobs:
           fi
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@main
         if: always() && steps.preflight.outputs.skip != 'true'
         with:
           name: cachyos-servermax-debs-run${{ github.run_number }}-${{ github.run_attempt }}
@@ -355,7 +367,7 @@ jobs:
           - Build timestamp: \`${BUILD_DATE_UTC}\`
           - linux-cachyos commit: \`${CACHY_COMMIT}\`
           - Workflow run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
-          - Builder: Oracle Ampere A1 ARM64 (cross-compile, no QEMU)
+          - Builder: GitHub Actions ubuntu-latest x86-64 (native, Docker container)
           - Output: Debian/Ubuntu amd64 \`.deb\` packages
           NOTES_EOF
 

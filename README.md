@@ -70,13 +70,23 @@ Arrow Lake-H has 4P (Lion Cove) + 8E (Skymont) + 2LP-E (Crestmont) cores with In
 
 ## Pipeline
 
-Builds on a self-hosted Oracle Ampere A1 (AArch64) runner. LLVM cross-compiles natively, no QEMU emulation.
+Builds on GitHub Actions `ubuntu-latest` (4 vCPU / 16 GB RAM, native x86-64). No cross-compilation — clang targets the host directly.
 
 ```text
-Oracle A1 (ARM64) -> clang --target=x86_64-linux-gnu -> .deb (amd64)
+GHA ubuntu-latest (native x86-64) -> clang -march=x86-64-v3 -> .deb (amd64)
 ```
 
-Schedule: daily at 09:00 UTC. Pre-flight check compares upstream `pkgver` against recent releases; **skips the build if the kernel version already exists** (no duplicate releases).
+Schedule: daily at 09:00 UTC. Pre-flight check compares upstream `pkgver` against recent releases; **skips the build if the kernel version already exists** (no duplicate releases). On skip, only checkout and pre-flight run — disk cleanup and the full build are skipped entirely.
+
+### Caching
+
+- **Docker BuildX**: builder image layers cached in GHA cache (`type=gha`) — warm builds reuse the cached image and skip the ~5-minute package install
+- **ccache**: compiler cache persisted via `actions/cache` (5 GB, keyed on kernel version) — incremental rebuilds skip unchanged translation units
+
+### Build environment
+
+- Disk: `rokibhasansagar/slimhub_actions` frees ~40-60 GB before build (browsers, Java, Android SDK removed)
+- Swap: 32 GB swapfile on `/mnt` (separate SSD) prevents OOM during the BTF+ThinLTO peak
 
 ### Release assets
 
@@ -91,16 +101,6 @@ Release tag format: `v{KERNEL}-cachyos-servermax-x86_64v3-{YYYYMMDD}.{RUN}`
 Example: `v7.1.rc2-cachyos-servermax-x86_64v3-20260610.3`
 
 RC kernels are published as pre-releases.
-
-## Required GitHub Runner Labels
-
-```text
-self-hosted
-Linux
-ARM64
-oracle-a1
-tkg-builder
-```
 
 ## Quick Install (NUC 15 Pro machine)
 
@@ -140,7 +140,7 @@ After setup, trigger a manual run immediately:
 sudo /usr/local/sbin/nuc15pro-kernel-updater.sh
 ```
 
-See [What the installer does automatically](#4-what-the-installer-does-automatically) for the full list of changes applied on each run.
+See [What the installer does automatically](#3-what-the-installer-does-automatically) for the full list of changes applied on each run.
 
 ---
 
@@ -166,20 +166,7 @@ OWNER_REPO="${OWNER_REPO:-AmirulAndalib/asus-nuc15pro-cachyos-server-edge-kernel
 Environment=OWNER_REPO=AmirulAndalib/asus-nuc15pro-cachyos-server-edge-kernel
 ```
 
-### 2. Register the self-hosted runner
-
-On your Oracle A1 instance:
-
-```bash
-./config.sh \
-  --url https://github.com/AmirulAndalib/asus-nuc15pro-cachyos-server-edge-kernel \
-  --token YOUR_RUNNER_TOKEN \
-  --labels self-hosted,Linux,ARM64,oracle-a1,tkg-builder
-```
-
-Docker must be installed and the runner user must have permission to run Docker without sudo.
-
-### 3. Install the auto-updater on the NUC
+### 2. Install the auto-updater on the NUC
 
 Run as root:
 
@@ -196,7 +183,7 @@ systemctl enable --now nuc15pro-kernel-updater.timer
 
 Timer fires daily at 04:00 local time. The installer is idempotent: records the installed tag in `/var/lib/nuc15pro-kernel-updater/last-installed-tag` and skips reinstall if already on that release.
 
-### 4. What the installer does automatically
+### 3. What the installer does automatically
 
 On first run and each new release, the installer handles everything without manual steps:
 
@@ -219,7 +206,7 @@ On first run and each new release, the installer handles everything without manu
 - Sets the new kernel as GRUB default (hidden menu, Shift to show)
 - Reboots
 
-### 5. sched_ext schedulers
+### 4. sched_ext schedulers
 
 The kernel has `CONFIG_SCHED_CLASS_EXT=y` and `CONFIG_DEBUG_INFO_BTF=y`. After install, `scx_bpfland` runs in Server mode automatically.
 
@@ -239,7 +226,7 @@ sudo scx_lavd                        # lavd (P/E/LP-E topology-aware, use with c
 scxctl start --scheduler scx_bpfland --mode Server
 ```
 
-### 6. Dual NIC: WiFi 7 + 2.5GbE simultaneously
+### 5. Dual NIC: WiFi 7 + 2.5GbE simultaneously
 
 The sysctl `net.ipv4.conf.all.rp_filter = 2` (loose reverse-path filter) allows both NICs to receive traffic simultaneously, enabling:
 
@@ -253,7 +240,7 @@ ip route add <destination> dev <wifi-iface> table 200
 ip rule add from <wifi-ip> table 200
 ```
 
-### 7. Power Limits and Fan Control
+### 6. Power Limits and Fan Control
 
 The NUC 15 Pro runs on a 120W AC adapter. The `nuc15pro-servermax-power.service` applies at boot:
 

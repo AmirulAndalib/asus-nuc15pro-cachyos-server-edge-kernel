@@ -19,21 +19,19 @@ msg "container info"
 date
 uname -a
 dpkg --print-architecture
-dpkg --print-foreign-architectures || true
 df -h
 free -h
 
 msg "toolchain"
 clang --version       || true
 ld.lld --version      || true
-x86_64-linux-gnu-gcc --version | head -2 || true
 pahole --version      || true
 ccache --version      || true
 make --version | head -2 || true
 
 msg "ccache setup"
 export CCACHE_DIR="${CCACHE_DIR:-/ccache}"
-export CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-30G}"
+export CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-5G}"
 export CCACHE_COMPILERCHECK=content
 ccache --zero-stats || true
 ccache -s           || true
@@ -518,23 +516,19 @@ grep -E \
   .config || true
 
 msg "build"
-# Parallel jobs default to nproc. On this Ampere A1 builder cores and RAM scale
-# together (~6 GB/core), so nproc is the correct default - and it is NOT what
-# OOM-kills the build, since the pahole/BTF peak is single-process. BUILD_JOBS
-# lets a more memory-constrained runner dial parallelism down without edits.
+# Parallel jobs = nproc (4 vCPUs on GHA ubuntu-latest). The pahole/BTF peak is
+# single-process; OOM comes from that spike, not from parallel compilation.
+# BUILD_JOBS lets a caller dial down parallelism without editing this script.
 JOBS="${BUILD_JOBS:-$(nproc)}"
 echo "build jobs: ${JOBS} (nproc=$(nproc), BUILD_JOBS=${BUILD_JOBS:-unset})"
 
-# ARCH=x86_64         - cross-target (container is ARM64)
-# LLVM=1 LLVM_IAS=1   - full LLVM toolchain
-# CROSS_COMPILE       - GNU prefix for any non-LLVM packaging tools
-# CC                  - explicit x86_64 target in clang; ccache wraps transparently
+# ARCH=x86_64         - explicit target (matches KBUILD_DEBARCH, prevents ambiguity)
+# LLVM=1 LLVM_IAS=1   - full LLVM toolchain (clang + lld + llvm-ar etc.)
+# CC                  - ccache wraps clang transparently; no cross target needed
 # KCFLAGS             - march=x86-64-v3 even if GENERIC_CPU3 is absent from Kconfig
-# KBUILD_DEBARCH=amd64 - prevent arm64-tagged debs from cross-build host
+# KBUILD_DEBARCH=amd64 - ensures amd64-tagged debs on the native x86-64 host
 make ARCH=x86_64 LLVM=1 LLVM_IAS=1 \
-  CROSS_COMPILE=x86_64-linux-gnu- \
-  CC="ccache clang --target=x86_64-linux-gnu" \
-  HOSTCC=gcc \
+  CC="ccache clang" \
   KCFLAGS="-march=x86-64-v3 -mtune=generic" \
   KBUILD_DEBARCH=amd64 \
   KDEB_PKGVERSION="${KVER}-${PKGREL}-cachyos" \
