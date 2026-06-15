@@ -1,4 +1,4 @@
-name: Build ASUS NUC 15 Pro CachyOS ServerMax Kernel (Oracle A1 ARM64 cross)
+name: Build ASUS NUC 16 Pro CachyOS ServerMax Kernel (Oracle A1 ARM64 cross)
 
 on:
   workflow_dispatch:
@@ -21,7 +21,7 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 concurrency:
-  group: asus-nuc15pro-cachyos-servermax-kernel-oracle
+  group: asus-nuc16pro-cachyos-servermax-kernel-oracle
   cancel-in-progress: false
 
 jobs:
@@ -339,7 +339,7 @@ jobs:
           CHECKSUMS="$(cat dist/SHA256SUMS)"
 
           TAG="v${KERNEL_VERSION}-cachyos-servermax-x86_64v3-${BUILD_DATE_NODASH}.${GITHUB_RUN_NUMBER}"
-          TITLE="Linux ${KERNEL_VERSION} • CachyOS ServerMax • ASUS NUC 15 Pro • ${BUILD_DATE}"
+          TITLE="Linux ${KERNEL_VERSION} • CachyOS ServerMax • ASUS NUC 16 Pro • ${BUILD_DATE}"
 
           PRERELEASE_OPTS=()
           echo "$KERNEL_VERSION" | grep -qi 'rc' && PRERELEASE_OPTS+=(--prerelease)
@@ -347,7 +347,7 @@ jobs:
           cat > /tmp/release-notes.md << NOTES_EOF
           ## Linux ${KERNEL_VERSION}, CachyOS ServerMax
 
-          AC-powered, full-throughput CachyOS ServerMax kernel for **ASUS NUC 15 Pro** with Intel Core Ultra 5 225H / Arrow Lake-H.
+          AC-powered, full-throughput CachyOS ServerMax kernel for **ASUS NUC 16 Pro** with Intel Core Ultra 7 356H / Panther Lake.
 
           ### Build Configuration
 
@@ -370,7 +370,7 @@ jobs:
 
           - CPU governor: \`performance\`
           - Intel EPP: \`performance\`
-          - GPU driver: \`xe\` (Intel Arc 130T Xe2-LPG, GuC auto-enabled)
+          - GPU driver: \`xe\` (Intel Xe3 LP Panther Lake, GuC auto-enabled)
           - SCX server scheduler: \`scx_bpfland -s 20000 -S\`
           - zswap: \`zstd\`, \`z3fold\`, \`20%\`
           - TCP: \`bbr\` + \`fq\`
