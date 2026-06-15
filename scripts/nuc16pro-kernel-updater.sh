@@ -3,10 +3,10 @@ set -euo pipefail
 
 OWNER_REPO="${OWNER_REPO:-AmirulAndalib/asus-nuc15pro-cachyos-server-edge-kernel}"
 
-STATE_DIR="/var/lib/nuc15pro-kernel-updater"
-LOG_DIR="/var/log/nuc15pro-kernel-updater"
-WORK_DIR="/tmp/nuc15pro-kernel-install"
-LOCK_FILE="/run/nuc15pro-kernel-updater.lock"
+STATE_DIR="/var/lib/nuc16pro-kernel-updater"
+LOG_DIR="/var/log/nuc16pro-kernel-updater"
+WORK_DIR="/tmp/nuc16pro-kernel-install"
+LOCK_FILE="/run/nuc16pro-kernel-updater.lock"
 
 mkdir -p "$STATE_DIR" "$LOG_DIR" "$WORK_DIR"
 
@@ -21,15 +21,15 @@ exec > >(tee -a "$LOG") 2>&1
 
 msg() { echo ":: $*"; }
 
-# Keep newest installed cachyos-nuc15pro kernel + currently running kernel.
-# Purge all other cachyos-nuc15pro image and header packages.
+# Keep newest installed cachyos-nuc16pro kernel + currently running kernel.
+# Purge all other cachyos-nuc16pro image and header packages.
 # Must run before update-initramfs to avoid regenerating for kernels about to be removed.
 purge_old_custom_kernels() {
   local target_kver="$1"
   msg "purging old custom kernels"
 
   mapfile -t ALL_CUSTOM_IMG < <(
-    dpkg -l | awk '/^ii/ && /linux-image-.*cachyos.*nuc15pro/ {print $2}' | sort -V
+    dpkg -l | awk '/^ii/ && /linux-image-.*cachyos.*nuc16pro/ {print $2}' | sort -V
   )
 
   if [ "${#ALL_CUSTOM_IMG[@]}" -le 1 ]; then
@@ -76,7 +76,7 @@ purge_old_custom_kernels() {
   apt-get purge -y "${PKGS_TO_PURGE[@]}" || true
 }
 
-msg "nuc15pro kernel updater"
+msg "nuc16pro kernel updater"
 date
 uname -a
 
@@ -110,10 +110,10 @@ NEED_REBOOT_ONLY=0
 if [ -f "$LAST_TAG_FILE" ] && [ "$(cat "$LAST_TAG_FILE")" = "$TAG" ]; then
   echo "$TAG already recorded as installed"
 
-  if echo "$CURRENT_KERNEL" | grep -q 'cachyos.*nuc15pro'; then
+  if echo "$CURRENT_KERNEL" | grep -q 'cachyos.*nuc16pro'; then
     echo "already running custom kernel, re-applying tuning and checking SCX"
     NEED_REBOOT_ONLY=2
-  elif dpkg -l | grep -qE '^ii[[:space:]]+linux-image-.*cachyos.*nuc15pro'; then
+  elif dpkg -l | grep -qE '^ii[[:space:]]+linux-image-.*cachyos.*nuc16pro'; then
     echo "custom kernel installed but not running, will set GRUB default and reboot"
     NEED_REBOOT_ONLY=1
   fi
@@ -191,22 +191,22 @@ BACKUP_DIR="$STATE_DIR/backups/$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$BACKUP_DIR"
 cp -a /etc/default/grub "$BACKUP_DIR/grub.bak" 2>/dev/null || true
 
-# Intel Arc 130T (Xe2-LPG): xe driver, no i915 options needed
+# Intel Xe3 LP (Panther Lake iGPU, device 0xB0A0): xe driver, no i915 options needed
 # xe driver auto-enables GuC firmware submission; no modprobe options required
-install -Dm644 /dev/stdin /etc/modprobe.d/xe-arc130t.conf <<'MODPROBE'
-# Intel Arc 130T (Arrow Lake Xe2-LPG): xe driver
+install -Dm644 /dev/stdin /etc/modprobe.d/xe-nuc16pro.conf <<'MODPROBE'
+# Intel Xe3 LP (Panther Lake, device 0xB0A0): xe driver
 # GuC firmware submission is enabled by default in xe; no options needed.
-# i915 is kept as fallback module but Arc 130T will bind to xe at boot.
+# i915 is kept as fallback module but Panther Lake iGPU will bind to xe at boot.
 MODPROBE
 
-# Intel Wi-Fi 7 BE201: disable power save for max throughput on AC
-install -Dm644 /dev/stdin /etc/modprobe.d/nuc15pro-wifi.conf <<'MODPROBE_WIFI'
+# Intel Wi-Fi 7 BE211: disable power save for max throughput on AC
+install -Dm644 /dev/stdin /etc/modprobe.d/nuc16pro-wifi.conf <<'MODPROBE_WIFI'
 options iwlwifi power_save=0
 options iwlmvm power_scheme=1
 MODPROBE_WIFI
 
 # server sysctl tuning
-install -Dm644 /dev/stdin /etc/sysctl.d/99-nuc15pro-servermax.conf <<'SYSCTL'
+install -Dm644 /dev/stdin /etc/sysctl.d/99-nuc16pro-servermax.conf <<'SYSCTL'
 # TCP: BBR + FQ
 net.core.default_qdisc             = fq
 net.ipv4.tcp_congestion_control    = bbr
@@ -246,19 +246,19 @@ net.ipv4.conf.default.rp_filter    = 2
 SYSCTL
 
 # I/O scheduler: ADIOS for SSDs/NVMe, BFQ for spinning disks
-install -Dm644 /dev/stdin /etc/udev/rules.d/60-nuc15pro-ioschedulers.rules <<'UDEV'
+install -Dm644 /dev/stdin /etc/udev/rules.d/60-nuc16pro-ioschedulers.rules <<'UDEV'
 ACTION=="add|change", KERNEL=="sd[a-z]", ATTR{queue/rotational}=="1", ATTR{queue/scheduler}="bfq"
 ACTION=="add|change", KERNEL=="sd[a-z]|mmcblk[0-9]", ATTR{queue/rotational}=="0", ATTR{queue/scheduler}="adios"
 ACTION=="add|change", KERNEL=="nvme[0-9]n[0-9]", ATTR{queue/rotational}=="0", ATTR{queue/scheduler}="adios"
 UDEV
 
 # CPU performance governor + EPP via systemd oneshot
-# Arrow Lake-H: 4P (Lion Cove) + 8E (Skymont) + 2LP-E (Crestmont), no HT
+# Panther Lake: 4P + 8E + 4LP-E = 16C/16T, no HT
 # All CPU* loops cover P/E/LP-E uniformly; Intel Thread Director + HFI
 # handles per-core-type scheduling automatically at the firmware level.
-install -Dm644 /dev/stdin /etc/systemd/system/nuc15pro-servermax-cpupower.service <<'SERVICE'
+install -Dm644 /dev/stdin /etc/systemd/system/nuc16pro-servermax-cpupower.service <<'SERVICE'
 [Unit]
-Description=NUC 15 Pro ServerMax CPU full performance policy (Arrow Lake-H P/E/LP-E)
+Description=NUC 16 Pro ServerMax CPU full performance policy (Panther Lake P/E/LP-E)
 After=multi-user.target
 
 [Service]
@@ -272,12 +272,12 @@ WantedBy=multi-user.target
 SERVICE
 
 systemctl daemon-reload
-systemctl enable nuc15pro-servermax-cpupower.service || true
+systemctl enable nuc16pro-servermax-cpupower.service || true
 
 # Runtime power tuning: RAPL PL1/PL2, platform profile, energy_perf_bias, NVMe queue depth, igc rings
-install -Dm644 /dev/stdin /etc/systemd/system/nuc15pro-servermax-power.service <<'POWER_SVC'
+install -Dm644 /dev/stdin /etc/systemd/system/nuc16pro-servermax-power.service <<'POWER_SVC'
 [Unit]
-Description=NUC 15 Pro ServerMax runtime power limits and device tuning
+Description=NUC 16 Pro ServerMax runtime power limits and device tuning
 After=multi-user.target
 
 [Service]
@@ -285,10 +285,11 @@ Type=oneshot
 RemainAfterExit=yes
 # ACPI platform profile: request performance fan curve from EC/BIOS
 ExecStart=/bin/sh -c '[ -f /sys/firmware/acpi/platform_profile ] && echo performance > /sys/firmware/acpi/platform_profile || true'
-# Intel RAPL on 120W AC: PL1=65W sustained, PL2=90W burst 60s
-# BIOS may lock the MSR; read back actual value after write to confirm
-ExecStart=/bin/sh -c 'p=/sys/class/powercap/intel-rapl/intel-rapl:0; [ -d "$p" ] && printf 65000000 > "$p/constraint_0_power_limit_uw" && echo "RAPL PL1=$(cat $p/constraint_0_power_limit_uw)uW" || true'
-ExecStart=/bin/sh -c 'p=/sys/class/powercap/intel-rapl/intel-rapl:0; [ -d "$p" ] && printf 90000000 > "$p/constraint_1_power_limit_uw" && echo "RAPL PL2=$(cat $p/constraint_1_power_limit_uw)uW" || true'
+# Intel RAPL on 120W AC: PL1=80W sustained, PL2=80W (MTP = max turbo power for 356H)
+# Setting PL1=PL2=MTP removes the sustained/burst distinction for max continuous performance.
+# BIOS may lock the MSR; read back actual value after write to confirm.
+ExecStart=/bin/sh -c 'p=/sys/class/powercap/intel-rapl/intel-rapl:0; [ -d "$p" ] && printf 80000000 > "$p/constraint_0_power_limit_uw" && echo "RAPL PL1=$(cat $p/constraint_0_power_limit_uw)uW" || true'
+ExecStart=/bin/sh -c 'p=/sys/class/powercap/intel-rapl/intel-rapl:0; [ -d "$p" ] && printf 80000000 > "$p/constraint_1_power_limit_uw" && echo "RAPL PL2=$(cat $p/constraint_1_power_limit_uw)uW" || true'
 ExecStart=/bin/sh -c 'p=/sys/class/powercap/intel-rapl/intel-rapl:0; [ -d "$p" ] && printf 60000000 > "$p/constraint_1_time_window_us" || true'
 # energy_perf_bias=0: no microarchitecture power-saving bias on any core
 ExecStart=/bin/sh -c 'for b in /sys/devices/system/cpu/cpu*/power/energy_perf_bias; do [ -w "$b" ] && printf 0 > "$b"; done; true'
@@ -296,17 +297,18 @@ ExecStart=/bin/sh -c 'for b in /sys/devices/system/cpu/cpu*/power/energy_perf_bi
 ExecStart=/bin/sh -c 'for q in /sys/block/nvme*/queue/nr_requests; do [ -w "$q" ] && printf 1023 > "$q"; done; true'
 # igc (I226-V 2.5GbE): maximize ring buffers for throughput
 ExecStart=/bin/sh -c 'iface=$(ls /sys/class/net/ 2>/dev/null | grep -m1 "^e" || true); [ -n "$iface" ] && ethtool -G "$iface" rx 4096 tx 4096 2>/dev/null || true'
-# Thermal: set x86 package passive trip point to 95C (throttle onset; TjMax for Arrow Lake-H = 105C)
+# Thermal: set x86 package passive trip point to 100C = TjMax for Panther Lake 356H.
+# This lets the CPU run at full turbo until hardware PROCHOT fires at TjMax.
 # Only type=passive trips are touched; type=critical (emergency shutdown) is left untouched.
-# Millidegrees: 95000. Writable unconditionally in kernel 6.14+ (no CONFIG_THERMAL_WRITABLE_TRIPS needed).
-ExecStart=/bin/sh -c 'for zone in /sys/class/thermal/thermal_zone*; do ztype=$(cat "$zone/type" 2>/dev/null || true); [ "$ztype" = "x86_pkg_temp" ] || continue; for i in 0 1; do ttype=$(cat "$zone/trip_point_${i}_type" 2>/dev/null || true); ttemp="$zone/trip_point_${i}_temp"; [ "$ttype" = "passive" ] || continue; [ -w "$ttemp" ] && printf 95000 > "$ttemp" 2>/dev/null && echo "thermal: $ttemp=95000" || true; done; done; true'
+# Millidegrees: 100000. Writable unconditionally in kernel 6.14+ (no CONFIG_THERMAL_WRITABLE_TRIPS needed).
+ExecStart=/bin/sh -c 'for zone in /sys/class/thermal/thermal_zone*; do ztype=$(cat "$zone/type" 2>/dev/null || true); [ "$ztype" = "x86_pkg_temp" ] || continue; for i in 0 1; do ttype=$(cat "$zone/trip_point_${i}_type" 2>/dev/null || true); ttemp="$zone/trip_point_${i}_temp"; [ "$ttype" = "passive" ] || continue; [ -w "$ttemp" ] && printf 100000 > "$ttemp" 2>/dev/null && echo "thermal: $ttemp=100000" || true; done; done; true'
 
 [Install]
 WantedBy=multi-user.target
 POWER_SVC
 
 systemctl daemon-reload
-systemctl enable nuc15pro-servermax-power.service || true
+systemctl enable nuc16pro-servermax-power.service || true
 
 msg "installing sched_ext schedulers"
 
@@ -375,7 +377,7 @@ msg "configuring sched_ext server mode"
 # Primary: scx_bpfland -s 20000 -S (20ms slice, strict-affinity server tasks)
 # Fallback chain: p2dq -> bpfland (no args) -> rusty -> beerland -> lavd
 #
-# scx_lavd is topology-aware for Arrow Lake P/E/LP-E but has a documented
+# scx_lavd is topology-aware for Panther Lake P/E/LP-E but has a documented
 # E-core over-prioritization issue (observed on Lunar Lake, sibling arch).
 # Keep lavd at end of fallback chain until upstream resolves it.
 
@@ -402,9 +404,9 @@ echo "no scx scheduler found, kernel EEVDF remains active"
 exit 0
 SCX_WRAPPER
 
-install -Dm644 /dev/stdin /etc/systemd/system/nuc15pro-scx-server.service <<'SCX_SVC'
+install -Dm644 /dev/stdin /etc/systemd/system/nuc16pro-scx-server.service <<'SCX_SVC'
 [Unit]
-Description=sched_ext server scheduler - ASUS NUC 15 Pro (Arrow Lake-H)
+Description=sched_ext server scheduler - ASUS NUC 16 Pro (Panther Lake)
 Documentation=https://github.com/sched-ext/scx
 After=multi-user.target
 ConditionPathIsDirectory=/sys/kernel/sched_ext
@@ -429,18 +431,18 @@ default_mode  = "Server"
 SCX_CFG
   systemctl daemon-reload
   systemctl enable --now scx_loader.service || true
-  systemctl disable nuc15pro-scx-server.service 2>/dev/null || true
+  systemctl disable nuc16pro-scx-server.service 2>/dev/null || true
 else
-  systemctl enable --now nuc15pro-scx-server.service || true
+  systemctl enable --now nuc16pro-scx-server.service || true
 fi
 
 if [ "$NEED_REBOOT_ONLY" -eq 2 ]; then
   SCX_ACTIVE=0
-  systemctl is-active --quiet nuc15pro-scx-server.service 2>/dev/null && SCX_ACTIVE=1 || true
+  systemctl is-active --quiet nuc16pro-scx-server.service 2>/dev/null && SCX_ACTIVE=1 || true
   systemctl is-active --quiet scx_loader.service          2>/dev/null && SCX_ACTIVE=1 || true
   if [ "$SCX_ACTIVE" -eq 0 ]; then
     echo "SCX not active, attempting restart..."
-    systemctl restart nuc15pro-scx-server.service 2>/dev/null || \
+    systemctl restart nuc16pro-scx-server.service 2>/dev/null || \
       systemctl restart scx_loader.service 2>/dev/null || true
   else
     echo "SCX active"
@@ -479,7 +481,7 @@ done
 
 # threadirqs: spread interrupts across P/E/LP-E cores for better I/O latency
 # nvme_core.default_ps_max_latency_us=0: disable NVMe power states (Gen4/Gen5 max throughput)
-# No i915.enable_guc=3: Arc 130T uses xe driver, not i915
+# No i915.enable_guc=3: Panther Lake iGPU uses xe driver, not i915
 GRUB_CMDLINE_ADD="threadirqs usbcore.autosuspend=-1 nvme_core.default_ps_max_latency_us=0 zswap.enabled=1 zswap.shrinker_enabled=1 zswap.compressor=zstd zswap.max_pool_percent=20 zswap.zpool=z3fold mitigations=auto intel_pstate=active"
 
 if grep -q '^GRUB_CMDLINE_LINUX_DEFAULT=' /etc/default/grub; then
@@ -515,7 +517,7 @@ update-grub
 msg "setting grub default"
 
 TARGET_KERNEL="$(
-  ls /boot/vmlinuz-*cachyos*nuc15pro*servermax* 2>/dev/null |
+  ls /boot/vmlinuz-*cachyos*nuc16pro*servermax* 2>/dev/null |
     sed 's|/boot/vmlinuz-||' |
     sort -V |
     tail -n1
@@ -554,7 +556,7 @@ msg "status"
 dpkg -l | grep -iE 'cachyos|linux-image|linux-headers' || true
 ls -lh /boot | grep -E 'cachyos|vmlinuz|initrd' || true
 
-systemctl status nuc15pro-scx-server.service --no-pager -l | head -60 || true
+systemctl status nuc16pro-scx-server.service --no-pager -l | head -60 || true
 systemctl status scx_loader.service --no-pager -l | head -30 2>/dev/null || true
 [ -r /sys/kernel/sched_ext/state ] && echo "sched_ext: $(cat /sys/kernel/sched_ext/state)"
 

@@ -191,7 +191,7 @@ chmod +x ./scripts/config
 msg "applying servermax config tweaks"
 
 # LOCALVERSION must be set via scripts/config (string, not boolean)
-./scripts/config --set-str LOCALVERSION "-cachyos-edge-nuc15pro-servermax"
+./scripts/config --set-str LOCALVERSION "-cachyos-edge-nuc16pro-servermax"
 
 # Use merge_config.sh for everything else - it processes the fragment through
 # Kconfig and resolves choice blocks properly. scripts/config does not understand
@@ -278,7 +278,7 @@ _warn_ym CONFIG_ACPI_PLATFORM_PROFILE
 _warn_ym CONFIG_ASUS_WMI
 _warn_ym CONFIG_HWMON
 _warn_ym CONFIG_SENSORS_CORETEMP
-# NUC 15 Pro / Arrow Lake specific, soft checks (CachyOS base config may vary)
+# NUC 16 Pro / Panther Lake specific, soft checks (CachyOS base config may vary)
 _warn_ym CONFIG_DRM_XE
 _warn_ym CONFIG_DRM_I915
 _warn_ym CONFIG_IGC
@@ -345,7 +345,7 @@ PKGREL=${PKGREL}
 CACHY_COMMIT=${CACHY_COMMIT}
 CACHY_VARIANT=${CACHY_VARIANT}
 BUILD_DATE_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-KERNEL_LOCALVERSION=-cachyos-edge-nuc15pro-servermax
+KERNEL_LOCALVERSION=-cachyos-edge-nuc16pro-servermax
 SCHEDULER=eevdf-servermax
 SCHED_EXT=compiled-in-scx_bpfland-server-auto-enabled
 CPU_TARGET=x86-64-v3
@@ -363,11 +363,11 @@ NVME_MULTIPATH=enabled
 CGROUP_V2=full
 RCU_LAZY=disabled
 BASE=cachyos-server
-GPU_DRIVER=xe-arc130t-xe2lpg
+GPU_DRIVER=xe-pantherlake-xe3lp
 ETH_DRIVER=igc-i226v-2500mbps
-NPU=ivpu-ai-boost-13tops
-WIFI=iwlwifi-be201-wifi7
-POWER_LIMITS=rapl-pl1-65w-pl2-90w-60s
+NPU=ivpu-pantherlake-50tops
+WIFI=iwlwifi-be211-wifi7
+POWER_LIMITS=rapl-pl1-80w-pl2-80w-60s
 PLATFORM_PROFILE=performance
 USB_AUTOSUSPEND=disabled
 MANIFEST
