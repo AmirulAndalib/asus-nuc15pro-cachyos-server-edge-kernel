@@ -325,10 +325,28 @@ msg "installing sched_ext schedulers"
 install_scx_from_source() {
   echo "building sched-ext/scx from source..."
   apt-get update -qq
+  # Package list is the union of what scx's own CI (.github/workflows/ci.yml
+  # SCX_PACKAGES) and INSTALL.md's documented Ubuntu dev-setup both require;
+  # the two upstream sources list different subsets (libbpf-dev/pahole vs
+  # libcap-ng-dev), so take both rather than guess which build.rs probes for.
   apt-get install -y \
     git curl ca-certificates build-essential pkg-config \
     clang llvm libelf-dev zlib1g-dev libzstd-dev libseccomp-dev \
-    protobuf-compiler rustc cargo make cmake ninja-build bpftool || true
+    libbpf-dev libcap-ng-dev pahole \
+    protobuf-compiler make cmake ninja-build bpftool || true
+
+  # Distro rustc lags crates.io MSRV (observed: Ubuntu apt rustc 1.93.1 vs
+  # sysinfo crate in scx's own committed Cargo.lock requiring rustc 1.95+).
+  # rustup's stable channel tracks current MSRV instead of distro cadence,
+  # so use that for the build rather than apt's rustc/cargo.
+  export RUSTUP_HOME="${RUSTUP_HOME:-/root/.rustup}"
+  export CARGO_HOME="${CARGO_HOME:-/root/.cargo}"
+  if [ ! -x "$CARGO_HOME/bin/rustup" ]; then
+    curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs | \
+      sh -s -- -y --profile minimal --default-toolchain stable
+  fi
+  export PATH="$CARGO_HOME/bin:$PATH"
+  rustup update stable >/dev/null
 
   rm -rf /opt/scx
   git clone --depth=1 https://github.com/sched-ext/scx.git /opt/scx
