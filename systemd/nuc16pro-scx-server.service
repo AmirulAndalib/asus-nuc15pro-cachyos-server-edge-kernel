@@ -1,0 +1,14 @@
+[Unit]
+Description=sched_ext server scheduler - ASUS NUC 16 Pro (Panther Lake)
+Documentation=https://github.com/sched-ext/scx
+After=multi-user.target
+ConditionPathIsDirectory=/sys/kernel/sched_ext
+
+[Service]
+Type=simple
+Restart=on-failure
+RestartSec=10
+ExecStart=/usr/local/sbin/scx-servermax-start.sh
+
+[Install]
+WantedBy=multi-user.target

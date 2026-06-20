@@ -1,0 +1,31 @@
+[Unit]
+Description=NUC 16 Pro ServerMax runtime power limits and device tuning
+After=multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# ACPI platform profile: request performance fan curve from EC/BIOS
+ExecStart=/bin/sh -c '[ -f /sys/firmware/acpi/platform_profile ] && echo performance > /sys/firmware/acpi/platform_profile || true'
+# Intel RAPL on 120W AC: PL1=104W, PL2=104W, Tau=224s (BIOS-unlocked ceiling, matches firmware Power Limit 1/2 + Time Window)
+# Setting PL1=PL2 removes the sustained/burst distinction for max continuous performance.
+# 104W package + iGPU/NPU/board draw stays under the 120W adapter; sustained ceiling is bounded by cooling, not the OS.
+# BIOS may lock the MSR; read back actual value after write to confirm.
+ExecStart=/bin/sh -c 'p=/sys/class/powercap/intel-rapl/intel-rapl:0; [ -d "$p" ] && printf 104000000 > "$p/constraint_0_power_limit_uw" && echo "RAPL PL1=$(cat $p/constraint_0_power_limit_uw)uW" || true'
+ExecStart=/bin/sh -c 'p=/sys/class/powercap/intel-rapl/intel-rapl:0; [ -d "$p" ] && printf 104000000 > "$p/constraint_1_power_limit_uw" && echo "RAPL PL2=$(cat $p/constraint_1_power_limit_uw)uW" || true'
+ExecStart=/bin/sh -c 'p=/sys/class/powercap/intel-rapl/intel-rapl:0; [ -d "$p" ] && printf 224000000 > "$p/constraint_0_time_window_us" || true'
+ExecStart=/bin/sh -c 'p=/sys/class/powercap/intel-rapl/intel-rapl:0; [ -d "$p" ] && printf 224000000 > "$p/constraint_1_time_window_us" || true'
+# energy_perf_bias=0: no microarchitecture power-saving bias on any core
+ExecStart=/bin/sh -c 'for b in /sys/devices/system/cpu/cpu*/power/energy_perf_bias; do [ -w "$b" ] && printf 0 > "$b"; done; true'
+# NVMe: maximize request queue depth per namespace for Gen4/Gen5 throughput
+ExecStart=/bin/sh -c 'for q in /sys/block/nvme*/queue/nr_requests; do [ -w "$q" ] && printf 1023 > "$q"; done; true'
+# igc (I226-V 2.5GbE): maximize ring buffers for throughput
+ExecStart=/bin/sh -c 'iface=$(ls /sys/class/net/ 2>/dev/null | grep -m1 "^e" || true); [ -n "$iface" ] && ethtool -G "$iface" rx 4096 tx 4096 2>/dev/null || true'
+# Thermal: set x86 package passive trip point to 100C = TjMax for Panther Lake 356H.
+# This lets the CPU run at full turbo until hardware PROCHOT fires at TjMax.
+# Only type=passive trips are touched; type=critical (emergency shutdown) is left untouched.
+# Millidegrees: 100000. Writable unconditionally in kernel 6.14+ (no CONFIG_THERMAL_WRITABLE_TRIPS needed).
+ExecStart=/bin/sh -c 'for zone in /sys/class/thermal/thermal_zone*; do ztype=$(cat "$zone/type" 2>/dev/null || true); [ "$ztype" = "x86_pkg_temp" ] || continue; for i in 0 1; do ttype=$(cat "$zone/trip_point_${i}_type" 2>/dev/null || true); ttemp="$zone/trip_point_${i}_temp"; [ "$ttype" = "passive" ] || continue; [ -w "$ttemp" ] && printf 100000 > "$ttemp" 2>/dev/null && echo "thermal: $ttemp=100000" || true; done; done; true'
+
+[Install]
+WantedBy=multi-user.target

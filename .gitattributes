@@ -9,3 +9,4 @@
 *.service text eol=lf
 *.timer   text eol=lf
 Dockerfile* text eol=lf
+*.in    text eol=lf
