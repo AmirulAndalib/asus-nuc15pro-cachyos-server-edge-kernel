@@ -322,75 +322,67 @@ systemctl restart nuc16pro-servermax-power.service || true
 
 msg "installing sched_ext schedulers"
 
-install_scx_from_source() {
-  echo "building sched-ext/scx from source..."
-  apt-get update -qq
-  # Package list is the union of what scx's own CI (.github/workflows/ci.yml
-  # SCX_PACKAGES) and INSTALL.md's documented Ubuntu dev-setup both require;
-  # the two upstream sources list different subsets (libbpf-dev/pahole vs
-  # libcap-ng-dev), so take both rather than guess which build.rs probes for.
-  apt-get install -y \
-    git curl ca-certificates build-essential pkg-config \
-    clang llvm libelf-dev zlib1g-dev libzstd-dev libseccomp-dev \
-    libbpf-dev libcap-ng-dev pahole \
-    protobuf-compiler make cmake ninja-build bpftool || true
+LAST_SCX_TAG_FILE="$STATE_DIR/last-installed-scx-tag"
 
-  # Distro rustc lags crates.io MSRV (observed: Ubuntu apt rustc 1.93.1 vs
-  # sysinfo crate in scx's own committed Cargo.lock requiring rustc 1.95+).
-  # rustup's stable channel tracks current MSRV instead of distro cadence,
-  # so use that for the build rather than apt's rustc/cargo.
-  export RUSTUP_HOME="${RUSTUP_HOME:-/root/.rustup}"
-  export CARGO_HOME="${CARGO_HOME:-/root/.cargo}"
-  if [ ! -x "$CARGO_HOME/bin/rustup" ]; then
-    curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs | \
-      sh -s -- -y --profile minimal --default-toolchain stable
+install_scx_from_release() {
+  echo "checking latest scx-* release..."
+
+  local scx_work="$WORK_DIR/scx-assets"
+  local scx_json="$WORK_DIR/latest-scx-release.json"
+
+  # Same repo as the kernel releases; filter to the scx-* tag stream since
+  # /releases/latest would resolve to whichever stream published most recently.
+  curl -fsSL "https://api.github.com/repos/${OWNER_REPO}/releases" | \
+    jq '[.[] | select(.tag_name | startswith("scx-"))] | .[0]' > "$scx_json"
+
+  local scx_tag
+  scx_tag="$(jq -r '.tag_name' "$scx_json")"
+
+  if [ -z "$scx_tag" ] || [ "$scx_tag" = "null" ]; then
+    echo "warn: no scx-* release found in ${OWNER_REPO}"
+    return 1
   fi
-  export PATH="$CARGO_HOME/bin:$PATH"
-  rustup update stable >/dev/null
 
-  rm -rf /opt/scx
-  git clone --depth=1 https://github.com/sched-ext/scx.git /opt/scx
+  if [ -f "$LAST_SCX_TAG_FILE" ] && [ "$(cat "$LAST_SCX_TAG_FILE")" = "$scx_tag" ]; then
+    echo "scx $scx_tag already installed, skipping"
+    return 0
+  fi
+
+  echo "installing scx schedulers: $scx_tag"
+
+  rm -rf "$scx_work"
+  mkdir -p "$scx_work"
+
+  jq -r '.assets[] | select(.name | test("^(scx_bpfland|scx_p2dq|scx_rusty|scx_beerland|scx_lavd|SHA256SUMS|BUILD_MANIFEST)$")) | .browser_download_url' \
+    "$scx_json" > "$scx_work/urls.txt"
+
+  grep -q 'SHA256SUMS' "$scx_work/urls.txt" || { echo "error: no SHA256SUMS asset in $scx_tag"; return 1; }
 
   (
-    cd /opt/scx
-    cargo build --release --locked || cargo build --release
-    find target/release -maxdepth 1 -type f -executable -name 'scx_*' \
-      -exec install -Dm755 {} /usr/local/bin/ \; || true
-    find target/release -maxdepth 1 -type f -executable -name 'scxctl' \
-      -exec install -Dm755 {} /usr/local/bin/ \; || true
-    find target/release -maxdepth 1 -type f -executable -name 'scx_loader' \
-      -exec install -Dm755 {} /usr/local/bin/ \; || true
-  )
+    cd "$scx_work"
+    while IFS= read -r url; do
+      [ -z "$url" ] && continue
+      echo "  -> $url"
+      curl -fLJO "$url"
+    done < urls.txt
+
+    ls -lh
+    cat BUILD_MANIFEST 2>/dev/null || true
+
+    sha256sum -c SHA256SUMS
+
+    for b in scx_bpfland scx_p2dq scx_rusty scx_beerland scx_lavd; do
+      [ -f "$b" ] || { echo "error: $b missing from $scx_tag assets"; exit 1; }
+      install -Dm755 "$b" "/usr/local/bin/$b"
+    done
+  ) || return 1
+
+  echo "$scx_tag" > "$LAST_SCX_TAG_FILE"
+  SCX_UPDATED=1
 }
 
-# update if already managed; install if missing
-if dpkg -l scx-scheds 2>/dev/null | grep -q '^ii'; then
-  apt-get install --only-upgrade -y scx-scheds scx-tools 2>/dev/null || true
-elif dpkg -l scx 2>/dev/null | grep -q '^ii'; then
-  apt-get install --only-upgrade -y scx 2>/dev/null || true
-elif [ -d /opt/scx/.git ]; then
-  REMOTE_HEAD="$(git -C /opt/scx ls-remote origin HEAD 2>/dev/null | cut -f1 || true)"
-  LOCAL_HEAD="$(git -C /opt/scx rev-parse HEAD 2>/dev/null || true)"
-  if [ -n "$REMOTE_HEAD" ] && [ "$REMOTE_HEAD" != "$LOCAL_HEAD" ]; then
-    echo "scx upstream changed ($LOCAL_HEAD -> $REMOTE_HEAD), rebuilding..."
-    install_scx_from_source || echo "warn: scx rebuild failed, keeping existing binaries"
-  else
-    echo "scx source up-to-date ($LOCAL_HEAD)"
-  fi
-fi
-
-if ! command -v scx_bpfland >/dev/null 2>&1; then
-  echo "scx_bpfland not found, trying apt..."
-  # scx-scheds provides scx_bpfland, scx_rusty, scx_lavd, scx_p2dq, etc.
-  apt-get install -y scx-scheds scx-tools 2>/dev/null || \
-  apt-get install -y scx           2>/dev/null || \
-  install_scx_from_source || true
-fi
-
-if ! command -v scx_bpfland >/dev/null 2>&1; then
-  echo "warn: scx_bpfland missing after install, falling back to source build"
-  install_scx_from_source || echo "warn: source build failed, kernel EEVDF remains active"
-fi
+SCX_UPDATED=0
+install_scx_from_release || echo "warn: scx install/update failed, existing binaries (if any) kept"
 
 msg "scx binaries"
 for b in scx_bpfland scx_p2dq scx_rusty scx_beerland scx_lavd scx_loader scxctl; do
@@ -468,12 +460,16 @@ if [ "$NEED_REBOOT_ONLY" -eq 2 ]; then
   SCX_ACTIVE=0
   systemctl is-active --quiet nuc16pro-scx-server.service 2>/dev/null && SCX_ACTIVE=1 || true
   systemctl is-active --quiet scx_loader.service          2>/dev/null && SCX_ACTIVE=1 || true
-  if [ "$SCX_ACTIVE" -eq 0 ]; then
-    echo "SCX not active, attempting restart..."
+  # enable --now above is a no-op if the unit is already running, so a same-day
+  # scx binary update would otherwise sit on disk unused until the next
+  # kernel-driven reboot (weeks out). Restart whenever a new tag just landed,
+  # not just when nothing is running at all.
+  if [ "$SCX_ACTIVE" -eq 0 ] || [ "$SCX_UPDATED" -eq 1 ]; then
+    echo "SCX not active or just updated, (re)starting..."
     systemctl restart nuc16pro-scx-server.service 2>/dev/null || \
       systemctl restart scx_loader.service 2>/dev/null || true
   else
-    echo "SCX active"
+    echo "SCX active, no update"
   fi
 fi
 
