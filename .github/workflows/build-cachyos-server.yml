@@ -113,7 +113,7 @@ jobs:
 
       - name: Free disk space
         if: steps.preflight.outputs.skip != 'true'
-        uses: rokibhasansagar/slimhub_actions@c2a6e4317d3de2b623ac7395b05e9d2149e8289b  # v25.42.5
+        uses: rokibhasansagar/slimhub_actions@5560c2d964bc240edfc5a0855b4b2c8261a29f29  # v25.42.5
         with:
           retain: "compiler_gcc,docker_buildkit,vcs"
 
@@ -192,11 +192,11 @@ jobs:
 
       - name: Set up Docker Buildx
         if: steps.preflight.outputs.skip != 'true'
-        uses: docker/setup-buildx-action@c887d9748da14dcb42b11cf8bcc773b301ea55b5  # v4.1.0
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4.1.0
 
       - name: Build builder image
         if: steps.preflight.outputs.skip != 'true'
-        uses: docker/build-push-action@ff26911fd365b0233252dfbd8eede1c0e9ef9a51  # v7.2.0
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf  # v7.2.0
         with:
           context: .
           file: Dockerfile.builder
