@@ -178,6 +178,8 @@ See [What the installer does automatically](#3-what-the-installer-does-automatic
 
 ## Setup
 
+`scripts/nuc16pro-kernel-updater.sh` is generated, not hand-edited. The config/unit bodies it deploys live as separate tracked files (`modprobe.d/`, `sysctl.d/`, `udev/`, `systemd/`) and get spliced into `scripts/nuc16pro-kernel-updater.sh.in` by `scripts/assemble-kernel-updater.sh`. To change a config, edit the source file or the `.in` template, re-run the assembler, and commit the regenerated script. `check-kernel-updater-sync.yml` fails CI if the committed script drifts from its sources.
+
 ### 1. Clone and set OWNER_REPO
 
 ```bash
@@ -228,7 +230,7 @@ On first run and each new release, the installer handles everything without manu
 - Writes `/etc/udev/rules.d/60-nuc16pro-ioschedulers.rules` (ADIOS for SSDs/NVMe, BFQ for HDDs)
 - Installs and enables `/etc/systemd/system/nuc16pro-servermax-cpupower.service` (performance governor + EPP for all P/E/LP-E cores)
 - Installs and enables `/etc/systemd/system/nuc16pro-servermax-power.service` (RAPL PL1=104W, PL2=104W, Tau=224s, platform profile, energy_perf_bias=0, NVMe nr_requests=1023, igc ring buffers, thermal trip at TjMax 100°C)
-- Installs `scx-scheds`/`scx-tools` (sched_ext userspace schedulers)
+- Downloads `scx_bpfland`, `scx_p2dq`, `scx_rusty`, `scx_beerland`, `scx_lavd` from this repo's own `scx-*` GitHub release (built by `build-scx-schedulers.yml`), verifies against `SHA256SUMS`, installs to `/usr/local/bin`
 - Enables `scx_loader` with `scx_bpfland` in Server mode (or direct service as fallback)
 - Updates GRUB cmdline: `threadirqs usbcore.autosuspend=-1 nvme_core.default_ps_max_latency_us=0 zswap.enabled=1 zswap.shrinker_enabled=1 zswap.compressor=zstd zswap.max_pool_percent=20 zswap.zpool=z3fold mitigations=auto intel_pstate=active`
 - Removes stale `i915.enable_guc=3` if present from previous config
