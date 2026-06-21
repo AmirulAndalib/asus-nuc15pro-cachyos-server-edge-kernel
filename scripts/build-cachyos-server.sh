@@ -352,7 +352,7 @@ CPU_TARGET=x86-64-v3
 TIMER_HZ=100
 LTO=ThinLTO
 THP=always
-PREEMPT=preempt_build-scx_bpfland_server
+PREEMPT=preempt_dynamic-boot_none
 ZSWAP=zstd-z3fold-20pct
 IO_SCHEDULER=adios-best-effort
 CPU_POLICY=performance-governor-epp-performance
@@ -367,7 +367,7 @@ GPU_DRIVER=xe-pantherlake-xe3lp
 ETH_DRIVER=igc-i226v-2500mbps
 NPU=ivpu-pantherlake-50tops
 WIFI=iwlwifi-be211-wifi7
-POWER_LIMITS=rapl-pl1-104w-pl2-104w-224s
+POWER_LIMITS=rapl-pl1-95w-pl2-95w-224s-mtp80w-cap
 PLATFORM_PROFILE=performance
 USB_AUTOSUSPEND=disabled
 MANIFEST

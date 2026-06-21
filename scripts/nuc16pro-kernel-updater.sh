@@ -293,12 +293,15 @@ Type=oneshot
 RemainAfterExit=yes
 # ACPI platform profile: request performance fan curve from EC/BIOS
 ExecStart=/bin/sh -c '[ -f /sys/firmware/acpi/platform_profile ] && echo performance > /sys/firmware/acpi/platform_profile || true'
-# Intel RAPL on 120W AC: PL1=104W, PL2=104W, Tau=224s (BIOS-unlocked ceiling, matches firmware Power Limit 1/2 + Time Window)
-# Setting PL1=PL2 removes the sustained/burst distinction for max continuous performance.
-# 104W package + iGPU/NPU/board draw stays under the 120W adapter; sustained ceiling is bounded by cooling, not the OS.
+# Intel RAPL on 120W AC: PL1=95W, PL2=95W, Tau=224s. The Core Ultra 7 356H has a
+# Maximum Turbo Power of 80W (Intel spec); on-device the package does not exceed
+# ~80W under stress even with RAPL set to 104W, so 80W is the real silicon ceiling.
+# RAPL >=95W is therefore intentionally non-binding: it guarantees RAPL never clips
+# the CPU below its 80W ceiling, leaving cooling and firmware to govern. Raising
+# RAPL past 80W does not add power; the MTP cannot be overridden from the OS.
 # BIOS may lock the MSR; read back actual value after write to confirm.
-ExecStart=/bin/sh -c 'p=/sys/class/powercap/intel-rapl/intel-rapl:0; [ -d "$p" ] && printf 104000000 > "$p/constraint_0_power_limit_uw" && echo "RAPL PL1=$(cat $p/constraint_0_power_limit_uw)uW" || true'
-ExecStart=/bin/sh -c 'p=/sys/class/powercap/intel-rapl/intel-rapl:0; [ -d "$p" ] && printf 104000000 > "$p/constraint_1_power_limit_uw" && echo "RAPL PL2=$(cat $p/constraint_1_power_limit_uw)uW" || true'
+ExecStart=/bin/sh -c 'p=/sys/class/powercap/intel-rapl/intel-rapl:0; [ -d "$p" ] && printf 95000000 > "$p/constraint_0_power_limit_uw" && echo "RAPL PL1=$(cat $p/constraint_0_power_limit_uw)uW" || true'
+ExecStart=/bin/sh -c 'p=/sys/class/powercap/intel-rapl/intel-rapl:0; [ -d "$p" ] && printf 95000000 > "$p/constraint_1_power_limit_uw" && echo "RAPL PL2=$(cat $p/constraint_1_power_limit_uw)uW" || true'
 ExecStart=/bin/sh -c 'p=/sys/class/powercap/intel-rapl/intel-rapl:0; [ -d "$p" ] && printf 224000000 > "$p/constraint_0_time_window_us" || true'
 ExecStart=/bin/sh -c 'p=/sys/class/powercap/intel-rapl/intel-rapl:0; [ -d "$p" ] && printf 224000000 > "$p/constraint_1_time_window_us" || true'
 # energy_perf_bias=0: no microarchitecture power-saving bias on any core
@@ -510,8 +513,12 @@ done
 
 # threadirqs: spread interrupts across P/E/LP-E cores for better I/O latency
 # nvme_core.default_ps_max_latency_us=0: disable NVMe power states (Gen4/Gen5 max throughput)
+# preempt=none: PREEMPT_DYNAMIC kernel booted no-preempt (server/throughput) mode.
+#   Runtime-switchable via /sys/kernel/debug/sched/preempt; scx_bpfland --server
+#   handles userspace scheduling latency.
+# mitigations=auto: keep CPU vulnerability mitigations on (box is internet-exposed).
 # No i915.enable_guc=3: Panther Lake iGPU uses xe driver, not i915
-GRUB_CMDLINE_ADD="threadirqs usbcore.autosuspend=-1 nvme_core.default_ps_max_latency_us=0 zswap.enabled=1 zswap.shrinker_enabled=1 zswap.compressor=zstd zswap.max_pool_percent=20 zswap.zpool=z3fold mitigations=auto intel_pstate=active"
+GRUB_CMDLINE_ADD="threadirqs usbcore.autosuspend=-1 nvme_core.default_ps_max_latency_us=0 zswap.enabled=1 zswap.shrinker_enabled=1 zswap.compressor=zstd zswap.max_pool_percent=20 zswap.zpool=z3fold mitigations=auto intel_pstate=active preempt=none"
 
 if grep -q '^GRUB_CMDLINE_LINUX_DEFAULT=' /etc/default/grub; then
   CURRENT="$(grep '^GRUB_CMDLINE_LINUX_DEFAULT=' /etc/default/grub | \
@@ -521,7 +528,7 @@ if grep -q '^GRUB_CMDLINE_LINUX_DEFAULT=' /etc/default/grub; then
   for param in i915.enable_guc threadirqs usbcore.autosuspend nvme_core.default_ps_max_latency_us \
                zswap.enabled zswap.shrinker_enabled zswap.compressor \
                zswap.max_pool_percent zswap.zpool rcutree.enable_rcu_lazy \
-               mitigations intel_pstate; do
+               mitigations intel_pstate preempt; do
     CURRENT="$(echo "$CURRENT" | sed -E "s/(^| )${param}=[^ ]+//g; s/(^| )${param}( |$)/ /g")"
   done
 

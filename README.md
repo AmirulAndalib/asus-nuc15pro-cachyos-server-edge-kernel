@@ -34,7 +34,7 @@ Tracks `linux-cachyos-server`, CachyOS stable server variant with server-optimiz
 | LTO                    | ThinLTO                                                                      |
 | CPU target             | x86-64-v3 (AVX2, BMI2, FMA, LZCNT)                                          |
 | Timer frequency        | 100 Hz                                                                       |
-| Preemption             | PREEMPT_BUILD (CachyOS server base)                                          |
+| Preemption             | None (max throughput)                                                        |
 | Transparent Huge Pages | always                                                                       |
 | TCP congestion         | BBR (mainline)                                                               |
 | I/O scheduler          | ADIOS (SSDs/NVMe), BFQ (HDDs) via udev                                       |
@@ -52,7 +52,7 @@ Tracks `linux-cachyos-server`, CachyOS stable server variant with server-optimiz
 | RCU lazy               | Disabled (AC-only, no power-saving bias)                                     |
 | BTF                    | Enabled (`/sys/kernel/btf/vmlinux` for scx tools)                           |
 | Debug info             | DWARF (toolchain default), required for BTF                                  |
-| CPU power limits       | RAPL PL1=104W, PL2=104W, Tau=224s (BIOS-unlocked, 120W AC adapter)          |
+| CPU power limits       | RAPL PL1=95W, PL2=95W, Tau=224s (silicon caps at 80W MTP)                    |
 | Fan control            | ACPI platform profile: `performance`; ASUS WMI EC interface                  |
 | USB autosuspend        | Disabled (`usbcore.autosuspend=-1`): full power all ports                    |
 | WiFi power save        | Disabled (`iwlwifi power_save=0`, `iwlmvm power_scheme=1`)                   |
@@ -229,10 +229,10 @@ On first run and each new release, the installer handles everything without manu
 - Writes `/etc/sysctl.d/99-nuc16pro-servermax.conf` (BBR+FQ, large buffers, inotify, vm tuning, `rp_filter=2` for dual NIC)
 - Writes `/etc/udev/rules.d/60-nuc16pro-ioschedulers.rules` (ADIOS for SSDs/NVMe, BFQ for HDDs)
 - Installs and enables `/etc/systemd/system/nuc16pro-servermax-cpupower.service` (performance governor + EPP for all P/E/LP-E cores)
-- Installs and enables `/etc/systemd/system/nuc16pro-servermax-power.service` (RAPL PL1=104W, PL2=104W, Tau=224s, platform profile, energy_perf_bias=0, NVMe nr_requests=1023, igc ring buffers, thermal trip at TjMax 100°C)
+- Installs and enables `/etc/systemd/system/nuc16pro-servermax-power.service` (RAPL PL1=95W, PL2=95W, Tau=224s; non-binding above the 80W silicon MTP, platform profile, energy_perf_bias=0, NVMe nr_requests=1023, igc ring buffers, thermal trip at TjMax 100°C)
 - Downloads `scx_bpfland`, `scx_p2dq`, `scx_rusty`, `scx_beerland`, `scx_lavd` from this repo's own `scx-*` GitHub release (built by `build-scx-schedulers.yml`), verifies against `SHA256SUMS`, installs to `/usr/local/bin`
 - Enables `scx_loader` with `scx_bpfland` in Server mode (or direct service as fallback)
-- Updates GRUB cmdline: `threadirqs usbcore.autosuspend=-1 nvme_core.default_ps_max_latency_us=0 zswap.enabled=1 zswap.shrinker_enabled=1 zswap.compressor=zstd zswap.max_pool_percent=20 zswap.zpool=z3fold mitigations=auto intel_pstate=active`
+- Updates GRUB cmdline: `threadirqs usbcore.autosuspend=-1 nvme_core.default_ps_max_latency_us=0 zswap.enabled=1 zswap.shrinker_enabled=1 zswap.compressor=zstd zswap.max_pool_percent=20 zswap.zpool=z3fold mitigations=auto intel_pstate=active preempt=none`
 - Removes stale `i915.enable_guc=3` if present from previous config
 - Purges all previous custom `cachyos-nuc16pro` kernels, keeping only the newest installed + the currently running kernel (panic fallback)
 - Adds `lz4` and `asus_wmi` to initramfs modules
@@ -276,15 +276,15 @@ ip rule add from <wifi-ip> table 200
 
 ### 6. Power Limits and Fan Control
 
-The NUC 16 Pro runs on a 120W AC adapter (19VDC, 6.32A) and has dual fans. BIOS Power Limit 1/2 are unlocked to 104W with a 224s time window; the `nuc16pro-servermax-power.service` mirrors this at the OS level at boot:
+The NUC 16 Pro runs on a 120W AC adapter (19VDC, 6.32A) and has dual fans. The Core Ultra 7 356H has a Maximum Turbo Power of 80W (Intel spec); on-device the package does not exceed ~80W under stress even with RAPL raised to 104W, so 80W is the real silicon ceiling. The `nuc16pro-servermax-power.service` sets RAPL at boot:
 
 **RAPL power limits** (via `/sys/class/powercap/intel-rapl/`):
 
-- PL1 = 104W sustained, Tau = 224s (BIOS-unlocked ceiling, above the 80W MTP default)
-- PL2 = 104W, Tau = 224s (same as PL1; no separate burst cap)
+- PL1 = 95W, Tau = 224s
+- PL2 = 95W, Tau = 224s
 - Readback logged to journal to confirm BIOS did not lock the MSR
 
-Setting PL1=PL2 removes the sustained/burst distinction so the CPU always runs at the BIOS-configured ceiling. At 104W sustained the package is bounded by the dual-fan cooling and hardware PROCHOT (TjMax 100°C), not by software.
+PL1 and PL2 are set to 95W on purpose: that is above the 80W silicon MTP, so RAPL never clips the CPU below its real ceiling. Package power is bounded by the 80W Maximum Turbo Power, the dual-fan cooling, and hardware PROCHOT (TjMax 100°C), not by the OS. Raising RAPL past 80W does not add power; the MTP is a firmware/silicon limit RAPL cannot override.
 
 **Thermal**: passive trip at 100°C = TjMax for the 356H. No software throttle before hardware PROCHOT.
 

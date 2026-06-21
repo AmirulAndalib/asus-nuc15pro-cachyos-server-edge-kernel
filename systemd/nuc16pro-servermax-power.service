@@ -7,12 +7,15 @@ Type=oneshot
 RemainAfterExit=yes
 # ACPI platform profile: request performance fan curve from EC/BIOS
 ExecStart=/bin/sh -c '[ -f /sys/firmware/acpi/platform_profile ] && echo performance > /sys/firmware/acpi/platform_profile || true'
-# Intel RAPL on 120W AC: PL1=104W, PL2=104W, Tau=224s (BIOS-unlocked ceiling, matches firmware Power Limit 1/2 + Time Window)
-# Setting PL1=PL2 removes the sustained/burst distinction for max continuous performance.
-# 104W package + iGPU/NPU/board draw stays under the 120W adapter; sustained ceiling is bounded by cooling, not the OS.
+# Intel RAPL on 120W AC: PL1=95W, PL2=95W, Tau=224s. The Core Ultra 7 356H has a
+# Maximum Turbo Power of 80W (Intel spec); on-device the package does not exceed
+# ~80W under stress even with RAPL set to 104W, so 80W is the real silicon ceiling.
+# RAPL >=95W is therefore intentionally non-binding: it guarantees RAPL never clips
+# the CPU below its 80W ceiling, leaving cooling and firmware to govern. Raising
+# RAPL past 80W does not add power; the MTP cannot be overridden from the OS.
 # BIOS may lock the MSR; read back actual value after write to confirm.
-ExecStart=/bin/sh -c 'p=/sys/class/powercap/intel-rapl/intel-rapl:0; [ -d "$p" ] && printf 104000000 > "$p/constraint_0_power_limit_uw" && echo "RAPL PL1=$(cat $p/constraint_0_power_limit_uw)uW" || true'
-ExecStart=/bin/sh -c 'p=/sys/class/powercap/intel-rapl/intel-rapl:0; [ -d "$p" ] && printf 104000000 > "$p/constraint_1_power_limit_uw" && echo "RAPL PL2=$(cat $p/constraint_1_power_limit_uw)uW" || true'
+ExecStart=/bin/sh -c 'p=/sys/class/powercap/intel-rapl/intel-rapl:0; [ -d "$p" ] && printf 95000000 > "$p/constraint_0_power_limit_uw" && echo "RAPL PL1=$(cat $p/constraint_0_power_limit_uw)uW" || true'
+ExecStart=/bin/sh -c 'p=/sys/class/powercap/intel-rapl/intel-rapl:0; [ -d "$p" ] && printf 95000000 > "$p/constraint_1_power_limit_uw" && echo "RAPL PL2=$(cat $p/constraint_1_power_limit_uw)uW" || true'
 ExecStart=/bin/sh -c 'p=/sys/class/powercap/intel-rapl/intel-rapl:0; [ -d "$p" ] && printf 224000000 > "$p/constraint_0_time_window_us" || true'
 ExecStart=/bin/sh -c 'p=/sys/class/powercap/intel-rapl/intel-rapl:0; [ -d "$p" ] && printf 224000000 > "$p/constraint_1_time_window_us" || true'
 # energy_perf_bias=0: no microarchitecture power-saving bias on any core
