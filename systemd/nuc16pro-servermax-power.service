@@ -1,25 +1,20 @@
 [Unit]
-Description=NUC 16 Pro ServerMax runtime power limits and device tuning
+Description=NUC 16 Pro ServerMax device tuning (BIOS owns power limits and fan curves)
 After=multi-user.target
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-# ACPI platform_profile=performance: unified fan/thermal/turbo control on this
-# board (firmware/EC owns the actual fan curve; the OS only picks the profile).
-# performance holds max turbo residency. Runtime-switchable to balanced/low-power.
-ExecStart=/bin/sh -c '[ -f /sys/firmware/acpi/platform_profile ] && echo performance > /sys/firmware/acpi/platform_profile || true'
-# Intel RAPL on 120W AC: PL1=95W, PL2=95W, Tau=224s. The Core Ultra 7 356H has a
-# Maximum Turbo Power of 80W (Intel spec); on-device the package does not exceed
-# ~80W under stress even with RAPL set to 104W, so 80W is the real silicon ceiling.
-# RAPL >=95W is therefore intentionally non-binding: it guarantees RAPL never clips
-# the CPU below its 80W ceiling, leaving cooling and firmware to govern. Raising
-# RAPL past 80W does not add power; the MTP cannot be overridden from the OS.
-# BIOS may lock the MSR; read back actual value after write to confirm.
-ExecStart=/bin/sh -c 'p=/sys/class/powercap/intel-rapl/intel-rapl:0; [ -d "$p" ] && printf 95000000 > "$p/constraint_0_power_limit_uw" && echo "RAPL PL1=$(cat $p/constraint_0_power_limit_uw)uW" || true'
-ExecStart=/bin/sh -c 'p=/sys/class/powercap/intel-rapl/intel-rapl:0; [ -d "$p" ] && printf 95000000 > "$p/constraint_1_power_limit_uw" && echo "RAPL PL2=$(cat $p/constraint_1_power_limit_uw)uW" || true'
-ExecStart=/bin/sh -c 'p=/sys/class/powercap/intel-rapl/intel-rapl:0; [ -d "$p" ] && printf 224000000 > "$p/constraint_0_time_window_us" || true'
-ExecStart=/bin/sh -c 'p=/sys/class/powercap/intel-rapl/intel-rapl:0; [ -d "$p" ] && printf 224000000 > "$p/constraint_1_time_window_us" || true'
+# Power limits (PL1/PL2/Tau) and the ACPI platform_profile are deliberately NOT
+# written here. This box has custom BIOS power limits and fan curves; writing
+# RAPL or platform_profile from the OS would override them, so BIOS/firmware
+# keeps full ownership of power and fan/thermal policy. The 356H is hard-capped
+# at its 80W Maximum Turbo Power (Intel spec) regardless, confirmed on-device
+# (package stays <=80W under stress even with RAPL raised to 104W), so an OS RAPL
+# write would only stomp the BIOS values for zero gain. The updater still reads
+# the RAPL constraints for status, so the BIOS-set PL1/PL2 remain visible.
+# Everything below tunes devices WITHIN the BIOS envelope and never changes
+# power limits or fan curves.
 # energy_perf_bias=0: no microarchitecture power-saving bias on any core
 ExecStart=/bin/sh -c 'for b in /sys/devices/system/cpu/cpu*/power/energy_perf_bias; do [ -w "$b" ] && printf 0 > "$b"; done; true'
 # NVMe: maximize request queue depth per namespace for Gen4/Gen5 throughput

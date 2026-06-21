@@ -52,8 +52,8 @@ Tracks `linux-cachyos-server`, CachyOS stable server variant with server-optimiz
 | RCU lazy               | Disabled (AC-only, no power-saving bias)                                     |
 | BTF                    | Enabled (`/sys/kernel/btf/vmlinux` for scx tools)                           |
 | Debug info             | DWARF (toolchain default), required for BTF                                  |
-| CPU power limits       | RAPL PL1=95W, PL2=95W, Tau=224s (silicon caps at 80W MTP)                    |
-| Fan control            | ACPI `platform_profile=performance`; firmware owns curves                    |
+| CPU power limits       | BIOS-owned PL1/PL2/Tau; silicon caps at 80W MTP                              |
+| Fan control            | BIOS/firmware owns curves; OS does not set them                              |
 | USB autosuspend        | Disabled (`usbcore.autosuspend=-1`): full power all ports                    |
 | WiFi power save        | Disabled (`iwlwifi power_save=0`, `iwlmvm power_scheme=1`)                   |
 | energy_perf_bias       | 0 (no microarchitecture power-saving bias on any core)                       |
@@ -229,7 +229,7 @@ On first run and each new release, the installer handles everything without manu
 - Writes `/etc/sysctl.d/99-nuc16pro-servermax.conf` (BBR+FQ, large buffers, inotify, vm tuning, `rp_filter=2` for dual NIC)
 - Writes `/etc/udev/rules.d/60-nuc16pro-ioschedulers.rules` (ADIOS for SSDs/NVMe, BFQ for HDDs)
 - Installs and enables `/etc/systemd/system/nuc16pro-servermax-cpupower.service` (performance governor + EPP for all P/E/LP-E cores)
-- Installs and enables `/etc/systemd/system/nuc16pro-servermax-power.service` (RAPL PL1=95W, PL2=95W, Tau=224s; non-binding above the 80W silicon MTP, platform profile, energy_perf_bias=0, NVMe nr_requests=1023, igc ring buffers, thermal trip at TjMax 100°C)
+- Installs and enables `/etc/systemd/system/nuc16pro-servermax-power.service` (BIOS owns PL1/PL2/Tau and the platform profile; the OS sets only energy_perf_bias=0, NVMe nr_requests=1023, igc ring buffers, and the TjMax 100°C thermal trip, all within the BIOS power envelope)
 - Downloads `scx_bpfland`, `scx_p2dq`, `scx_rusty`, `scx_beerland`, `scx_lavd` from this repo's own `scx-*` GitHub release (built by `build-scx-schedulers.yml`), verifies against `SHA256SUMS`, installs to `/usr/local/bin`
 - Enables `scx_loader` with `scx_bpfland` in Server mode (or direct service as fallback)
 - Updates GRUB cmdline: `threadirqs usbcore.autosuspend=-1 nvme_core.default_ps_max_latency_us=0 zswap.enabled=1 zswap.shrinker_enabled=1 zswap.compressor=zstd zswap.max_pool_percent=20 zswap.zpool=z3fold mitigations=auto intel_pstate=active preempt=none`
@@ -276,39 +276,38 @@ ip rule add from <wifi-ip> table 200
 
 ### 6. Power Limits and Fan Control
 
-The NUC 16 Pro runs on a 120W AC adapter (19VDC, 6.32A) and has dual fans. The Core Ultra 7 356H has a Maximum Turbo Power of 80W (Intel spec); on-device the package does not exceed ~80W under stress even with RAPL raised to 104W, so 80W is the real silicon ceiling. The `nuc16pro-servermax-power.service` sets RAPL at boot:
+The NUC 16 Pro runs on a 120W AC adapter (19VDC, 6.32A) and has dual fans. **Power limits (PL1/PL2/Tau) and fan curves are owned by the BIOS, not the OS.** This box runs custom BIOS power limits and fan curves, so `nuc16pro-servermax-power.service` deliberately does **not** write RAPL or `platform_profile`: either would overwrite the BIOS-set values and could have the firmware retune the fans. BIOS/firmware keeps full ownership of power and fan/thermal policy.
 
-**RAPL power limits** (via `/sys/class/powercap/intel-rapl/`):
+There is also nothing for the OS to unlock: the Core Ultra 7 356H is hard-capped at its **80W Maximum Turbo Power** (Intel spec), confirmed on-device (the package stays at ~80W under stress even with RAPL raised to 104W). An OS RAPL write above 80W is inert; below it would only throttle. So the service tunes only devices that sit **within** the BIOS power envelope and never touch PL/Tau or fan curves:
 
-- PL1 = 95W, Tau = 224s
-- PL2 = 95W, Tau = 224s
-- Readback logged to journal to confirm BIOS did not lock the MSR
+- `energy_perf_bias=0` (HWP bias toward performance; a hint, not a power limit)
+- NVMe `nr_requests=1023` per namespace (Gen4/Gen5 queue depth)
+- igc (I226-V) ring buffers rx/tx=4096
+- x86 package passive thermal trip raised to TjMax (100°C) so the kernel does not software-throttle before hardware PROCHOT. This is a CPU-throttle threshold, not a fan curve, and does not touch BIOS/EC fan control.
 
-PL1 and PL2 are set to 95W on purpose: that is above the 80W silicon MTP, so RAPL never clips the CPU below its real ceiling. Package power is bounded by the 80W Maximum Turbo Power, the dual-fan cooling, and hardware PROCHOT (TjMax 100°C), not by the OS. Raising RAPL past 80W does not add power; the MTP is a firmware/silicon limit RAPL cannot override.
+Frequency scaling stays aggressive via `nuc16pro-servermax-cpupower.service` (performance governor + EPP), which also operates within the BIOS envelope.
 
-**Thermal**: passive trip at 100°C = TjMax for the 356H. No software throttle before hardware PROCHOT.
-
-**ACPI platform_profile** is the unified control for fan, thermal, and turbo-residency behavior on this board; fan control does not go through hwmon pwm. The OS only selects a profile (`low-power`, `balanced`, `performance`), it does not define a fan curve, so firmware/BIOS keeps ownership of the actual curves. `nuc16pro-servermax-power.service` persists `performance` at boot (max turbo residency, the right default for this throughput target); `balanced` and `low-power` trade sustained performance for a quieter idle.
+**ACPI platform_profile** is the firmware's unified knob for fan, thermal, and turbo-residency policy on this board (fan control does not go through hwmon pwm). The OS does **not** set it, so your BIOS-booted profile and custom curves stand. It is the one setting that changes firmware fan/turbo aggressiveness, so it is left to you: `performance` holds max turbo (and may apply the firmware's own fan curve), `balanced`/`low-power` trade sustained performance for a quieter idle. Set your preferred default in BIOS, or switch it live (below).
 
 `asus_armoury` loads but logs `No matching power limits found` (it targets ASUS ROG/TUF laptops, not enterprise NUCs) and drops out, leaving native `platform_profile` in control. `CONFIG_ASUS_WMI=m` provides the `asus-nb-wmi` interface.
 
 **Fan RPM is not exposed** on this board: `asus-nb-wmi` has no fan readout for `NUC16GDBU76`, the raw EC space (`ec_sys`) reads empty, and the Super-IO chip (id `0x1376`) is unsupported by any mainline driver. All temperature sensors work (per-core coretemp, `x86_pkg_temp`, DPTF `TCPU`/`TCPU_PCI`, NVMe, WiFi), which is the actionable thermal signal. Fan speed stays under firmware/BIOS control.
 
-To check current state:
+To check power and thermal state (the RAPL reads show the BIOS-set limits):
 
 ```bash
-cat /sys/firmware/acpi/platform_profile
-cat /sys/class/powercap/intel-rapl/intel-rapl:0/constraint_0_power_limit_uw
-cat /sys/class/powercap/intel-rapl/intel-rapl:0/constraint_1_power_limit_uw
+cat /sys/firmware/acpi/platform_profile                                       # current profile (BIOS default)
+cat /sys/class/powercap/intel-rapl/intel-rapl:0/constraint_0_power_limit_uw   # BIOS-set PL1
+cat /sys/class/powercap/intel-rapl/intel-rapl:0/constraint_1_power_limit_uw   # BIOS-set PL2
 sensors  # requires lm-sensors
 ```
 
-To list or switch platform profiles (live; does not change the persisted boot default):
+To check or switch the platform profile (the OS does not persist one; BIOS owns the default):
 
 ```bash
 cat /sys/firmware/acpi/platform_profile_choices                  # low-power balanced performance
+echo performance | sudo tee /sys/firmware/acpi/platform_profile  # max turbo (may apply firmware fan curve)
 echo balanced | sudo tee /sys/firmware/acpi/platform_profile     # quieter idle, ramps under load
-echo performance | sudo tee /sys/firmware/acpi/platform_profile  # max turbo (boot default)
 ```
 
 ## Manual Build
