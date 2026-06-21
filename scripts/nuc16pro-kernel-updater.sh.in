@@ -85,9 +85,14 @@ apt-get update -qq
 apt-get install -y curl jq ca-certificates ethtool lm-sensors
 
 msg "fetching latest release"
-# Use list endpoint, not /releases/latest, so RC prereleases are included
+# Use list endpoint, not /releases/latest, so RC prereleases are included.
+# Exclude the scx-* stream: this repo publishes both kernel and scx-scheduler
+# releases, so a plain .[0] grabs whichever published most recently. A fresh
+# scx-* release would then be misread as the kernel release (no linux-image
+# asset -> hard fail until the next kernel release lands, possibly weeks out).
+# Mirrors the scx fetch filter in install_scx_from_release.
 curl -fsSL "https://api.github.com/repos/${OWNER_REPO}/releases" | \
-  jq '.[0]' > "$WORK_DIR/latest-release.json"
+  jq '[.[] | select(.tag_name | startswith("scx-") | not)] | .[0]' > "$WORK_DIR/latest-release.json"
 
 TAG="$(jq -r '.tag_name' "$WORK_DIR/latest-release.json")"
 
@@ -446,12 +451,22 @@ update-grub
 
 msg "setting grub default"
 
-TARGET_KERNEL="$(
+ALL_TARGET_KERNELS="$(
   ls /boot/vmlinuz-*cachyos*nuc16pro*servermax* 2>/dev/null |
     sed 's|/boot/vmlinuz-||' |
-    sort -V |
-    tail -n1
+    sort -V
 )"
+
+# Pick the kernel matching this release's version (TAG_KVER), not the highest
+# sort order. An older RC left in /boot (e.g. 7.1.0-rc2) sorts ABOVE the newer
+# stable target (7.1.0) under sort -V, so tail -n1 would wrongly select the RC
+# and set GRUB to boot it. The first ascending-sorted entry containing TAG_KVER
+# is the stable target (it sorts below its own -rc), matching the keep logic in
+# purge_old_custom_kernels.
+TARGET_KERNEL="$(printf '%s\n' "$ALL_TARGET_KERNELS" | grep -F "$TAG_KVER" | head -n1 || true)"
+
+# Fallback: tag version not found verbatim in any vmlinuz name -> highest sort.
+[ -z "${TARGET_KERNEL:-}" ] && TARGET_KERNEL="$(printf '%s\n' "$ALL_TARGET_KERNELS" | tail -n1)"
 
 if [ -z "${TARGET_KERNEL:-}" ]; then
   echo "error: CachyOS kernel not found in /boot"

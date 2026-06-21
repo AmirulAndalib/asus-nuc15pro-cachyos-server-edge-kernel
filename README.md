@@ -34,7 +34,7 @@ Tracks `linux-cachyos-server`, CachyOS stable server variant with server-optimiz
 | LTO                    | ThinLTO                                                                      |
 | CPU target             | x86-64-v3 (AVX2, BMI2, FMA, LZCNT)                                          |
 | Timer frequency        | 100 Hz                                                                       |
-| Preemption             | None (max throughput)                                                        |
+| Preemption             | PREEMPT_BUILD (CachyOS server base)                                          |
 | Transparent Huge Pages | always                                                                       |
 | TCP congestion         | BBR (mainline)                                                               |
 | I/O scheduler          | ADIOS (SSDs/NVMe), BFQ (HDDs) via udev                                       |
