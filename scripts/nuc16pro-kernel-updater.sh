@@ -472,7 +472,31 @@ try() {
   return 1
 }
 
-try scx_flash    ""               || \
+# The primary (scx_flash) can transiently fail ops.cgroup_init() with -ENOMEM during
+# the boot container storm: ~20 docker-compose services mass-launch and extract images
+# in parallel and the kernel briefly cannot satisfy the scheduler's cgroup BPF
+# allocation (measured on this box: the scheduler unit starts ~68s into boot while
+# image work runs past ~2.5min). flash attaches cleanly once the storm eases, so retry
+# the primary on a backed-off window before demoting to the proven fallback. try()
+# exits the script on attach, so this loop only returns on failure; while it retries
+# the kernel's own EEVDF scheduler runs (the box stays scheduled, just not yet on the
+# custom scheduler).
+try_primary() {
+  command -v scx_flash >/dev/null 2>&1 || return 1
+  i=1
+  while [ "$i" -le 8 ]; do
+    try scx_flash ""
+    [ "$i" -eq 8 ] && break
+    d=$((i * 5)); [ "$d" -gt 30 ] && d=30
+    echo "scx_flash attempt $i did not attach; retrying in ${d}s (boot memory pressure?)"
+    sleep "$d"
+    i=$((i + 1))
+  done
+  echo "scx_flash did not attach after 8 attempts, falling back to proven chain"
+  return 1
+}
+
+try_primary                       || \
 try scx_bpfland  "-s 20000 -S"    || \
 try scx_p2dq     "--keep-running" || \
 try scx_bpfland  ""               || \
