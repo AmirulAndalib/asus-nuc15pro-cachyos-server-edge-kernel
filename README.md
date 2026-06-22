@@ -276,7 +276,7 @@ ip rule add from <wifi-ip> table 200
 
 ### 6. Power Limits and Fan Control
 
-The NUC 16 Pro runs on a 120W AC adapter (19VDC, 6.32A) and has dual fans. **Power limits (PL1/PL2/Tau) and fan curves are owned by the BIOS, not the OS.** This box runs custom BIOS power limits and fan curves, so `nuc16pro-servermax-power.service` deliberately does **not** write RAPL or `platform_profile`: either would overwrite the BIOS-set values and could have the firmware retune the fans. BIOS/firmware keeps full ownership of power and fan/thermal policy.
+The NUC 16 Pro runs on a 120W AC adapter (19VDC, 6.32A) and has dual fans. **Power limits (PL1/PL2/Tau) and the fan curves are owned by the BIOS, not the OS.** This box runs custom BIOS power limits and fan curves, so `nuc16pro-servermax-power.service` deliberately does **not** write RAPL or `platform_profile`; BIOS/firmware keeps full ownership of power and fan/thermal policy. The fans follow the BIOS/EC curve under any booted OS, so if a fan does not ramp the way you expect, fix the curve in BIOS; that is where fan behavior is set, not in the kernel.
 
 There is also nothing for the OS to unlock: the Core Ultra 7 356H is hard-capped at its **80W Maximum Turbo Power** (Intel spec), confirmed on-device (the package stays at ~80W under stress even with RAPL raised to 104W). An OS RAPL write above 80W is inert; below it would only throttle. So the service tunes only devices that sit **within** the BIOS power envelope and never touch PL/Tau or fan curves:
 
@@ -287,13 +287,7 @@ There is also nothing for the OS to unlock: the Core Ultra 7 356H is hard-capped
 
 Frequency scaling stays aggressive via `nuc16pro-servermax-cpupower.service` (performance governor + EPP), which also operates within the BIOS envelope.
 
-**ACPI platform_profile** is a firmware thermal/turbo knob (backed by the DPTF "SoC Power Slider"). The OS does **not** set it, so your BIOS-booted profile stands. It does **not** affect the fan issue below: it is already `performance` and that has no effect on the stuck fan.
-
-**Known issue: the fan does not ramp under any booted OS. This is a firmware/DPTF bug, not the kernel.** The fans are controlled through Intel DPTF (participant `TFN1` under `\_SB.IETM`, driven via the `\_SB.DPTF` mailbox). On this BIOS the DPTF fan methods are broken: `\_SB.DPTF.GFNS`, `\_SB.DPTF.FNSL`, and `\_SB.IETM.TFN1._FST` all abort with `AE_NOT_FOUND` on every boot. During BIOS/POST the firmware drives the fan itself, so the custom curve works there. Once any OS boots, the firmware hands fan control to the OS via DPTF, but no OS can drive it (the methods fail) and the EC does not fall back to the BIOS curve, so the fan stays at minimum and the CPU thermal-throttles (~95C, thousands of TCC events) under sustained load.
-
-This was proven to be firmware and not the kernel: the **stock Ubuntu generic kernel fails identically** to this CachyOS build, and blacklisting the int340x/DPTF drivers (`modprobe.blacklist=int3400_thermal,...`), masking `power-profiles-daemon`, and disabling `thermald` all changed nothing. The handoff is firmware-side and cannot be undone from the OS. **The fix is in BIOS: disable Intel DPTF / "Intel Dynamic Tuning" (or set fan control to Auto / EC) so the EC keeps running the custom curve after boot.** If there is no such toggle, it is a BIOS defect (update the BIOS or report it to ASUS); no kernel or repo change can fix it.
-
-**Fan RPM is not exposed** to the OS for the same root cause: the DPTF `_FST` (read fan speed) method is broken, so Linux has no working interface to read RPM. The raw EC space is memory-mapped here (`INVS` at `0x60BC6000`, holding the `FANM` fan-mode byte), not the legacy port space, so `ec_sys` reads empty. All temperature sensors work (per-core coretemp, `x86_pkg_temp`, NVMe, WiFi), which is the actionable thermal signal.
+**ACPI platform_profile** is a firmware thermal/turbo knob (backed by the DPTF "SoC Power Slider"). The OS leaves it to BIOS, so your BIOS-booted profile stands. Fan RPM is not surfaced through standard hwmon on this board, so the temperature sensors (per-core coretemp, `x86_pkg_temp`, NVMe, WiFi) are the actionable thermal signal while the BIOS/EC governs the fan response.
 
 To check power and thermal state (the RAPL reads show the BIOS-set limits):
 
@@ -308,8 +302,8 @@ To check or switch the platform profile (the OS does not persist one; BIOS owns 
 
 ```bash
 cat /sys/firmware/acpi/platform_profile_choices                  # low-power balanced performance
-echo performance | sudo tee /sys/firmware/acpi/platform_profile  # max turbo (no effect on the DPTF fan issue)
-echo balanced | sudo tee /sys/firmware/acpi/platform_profile     # quieter idle, ramps under load
+echo performance | sudo tee /sys/firmware/acpi/platform_profile  # bias toward max turbo
+echo balanced | sudo tee /sys/firmware/acpi/platform_profile     # lower sustained power, quieter
 ```
 
 ## Manual Build

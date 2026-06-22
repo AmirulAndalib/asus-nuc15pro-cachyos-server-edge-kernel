@@ -6,15 +6,17 @@ After=multi-user.target
 Type=oneshot
 RemainAfterExit=yes
 # Power limits (PL1/PL2/Tau) and the ACPI platform_profile are deliberately NOT
-# written here. This box has custom BIOS power limits and fan curves; writing
-# RAPL or platform_profile from the OS would override them, so BIOS/firmware
-# keeps full ownership of power and fan/thermal policy. The 356H is hard-capped
-# at its 80W Maximum Turbo Power (Intel spec) regardless, confirmed on-device
-# (package stays <=80W under stress even with RAPL raised to 104W), so an OS RAPL
-# write would only stomp the BIOS values for zero gain. The updater still reads
-# the RAPL constraints for status, so the BIOS-set PL1/PL2 remain visible.
-# Everything below tunes devices WITHIN the BIOS envelope and never changes
-# power limits or fan curves.
+# written here:
+#  - RAPL: the 356H is hard-capped at its 80W Maximum Turbo Power (Intel spec),
+#    confirmed on-device (package stays <=80W under stress even with RAPL raised
+#    to 104W). A write above 80W is inert and below it would only throttle, so
+#    there is nothing to gain; BIOS owns PL1/PL2/Tau.
+#  - platform_profile: left to BIOS, which is where the thermal and fan curves
+#    are configured on this box. (To bias max turbo from the OS instead, add an
+#    ExecStart that writes 'performance' to /sys/firmware/acpi/platform_profile.)
+# The updater still reads the RAPL constraints for status, so the BIOS-set
+# PL1/PL2 remain visible. Everything below tunes devices WITHIN the BIOS envelope
+# and never changes power limits or fan curves.
 # energy_perf_bias=0: no microarchitecture power-saving bias on any core
 ExecStart=/bin/sh -c 'for b in /sys/devices/system/cpu/cpu*/power/energy_perf_bias; do [ -w "$b" ] && printf 0 > "$b"; done; true'
 # NVMe: maximize request queue depth per namespace for Gen4/Gen5 throughput

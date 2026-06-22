@@ -231,7 +231,7 @@ systemctl enable nuc16pro-servermax-cpupower.service || true
 # won't re-run ExecStart just because the unit file changed underneath it
 systemctl restart nuc16pro-servermax-cpupower.service || true
 
-# Runtime power tuning: RAPL PL1/PL2, platform profile, energy_perf_bias, NVMe queue depth, igc rings
+# Runtime device tuning within the BIOS power envelope: energy_perf_bias, NVMe queue depth, igc rings, TjMax passive trip (BIOS owns PL1/PL2/Tau, platform_profile, and fan curves)
 install -Dm644 /dev/stdin /etc/systemd/system/nuc16pro-servermax-power.service <<'POWER_SVC'
 @@FILE:systemd/nuc16pro-servermax-power.service@@
 POWER_SVC
