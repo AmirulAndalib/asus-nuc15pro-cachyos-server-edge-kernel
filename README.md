@@ -34,7 +34,7 @@ Tracks `linux-cachyos-server`, CachyOS stable server variant with server-optimiz
 | LTO                    | ThinLTO                                                                      |
 | CPU target             | x86-64-v3 (AVX2, BMI2, FMA, LZCNT)                                          |
 | Timer frequency        | 100 Hz                                                                       |
-| Preemption             | None (max throughput)                                                        |
+| Preemption             | Lazy (throughput lean; RT-class IRQs preempt immediately)                                                        |
 | Transparent Huge Pages | always                                                                       |
 | TCP congestion         | BBR (mainline)                                                               |
 | I/O scheduler          | ADIOS (SSDs/NVMe), BFQ (HDDs) via udev                                       |
@@ -232,7 +232,7 @@ On first run and each new release, the installer handles everything without manu
 - Installs and enables `/etc/systemd/system/nuc16pro-servermax-power.service` (BIOS owns PL1/PL2/Tau and the platform profile; the OS sets only energy_perf_bias=0, NVMe nr_requests=1023, igc ring buffers, and the TjMax 100°C thermal trip, all within the BIOS power envelope)
 - Downloads `scx_bpfland`, `scx_p2dq`, `scx_rusty`, `scx_beerland`, `scx_lavd` from this repo's own `scx-*` GitHub release (built by `build-scx-schedulers.yml`), verifies against `SHA256SUMS`, installs to `/usr/local/bin`
 - Enables `scx_loader` with `scx_bpfland` in Server mode (or direct service as fallback)
-- Updates GRUB cmdline: `threadirqs usbcore.autosuspend=-1 nvme_core.default_ps_max_latency_us=0 zswap.enabled=1 zswap.shrinker_enabled=1 zswap.compressor=zstd zswap.max_pool_percent=20 zswap.zpool=z3fold mitigations=auto intel_pstate=active preempt=none`
+- Updates GRUB cmdline: `threadirqs usbcore.autosuspend=-1 nvme_core.default_ps_max_latency_us=0 zswap.enabled=1 zswap.shrinker_enabled=1 zswap.compressor=zstd zswap.max_pool_percent=20 zswap.zpool=z3fold mitigations=auto intel_pstate=active preempt=lazy`
 - Removes stale `i915.enable_guc=3` if present from previous config
 - Purges all previous custom `cachyos-nuc16pro` kernels, keeping only the newest installed + the currently running kernel (panic fallback)
 - Adds `lz4` and `asus_wmi` to initramfs modules

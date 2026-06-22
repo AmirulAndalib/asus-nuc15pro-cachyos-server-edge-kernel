@@ -530,12 +530,16 @@ done
 
 # threadirqs: spread interrupts across P/E/LP-E cores for better I/O latency
 # nvme_core.default_ps_max_latency_us=0: disable NVMe power states (Gen4/Gen5 max throughput)
-# preempt=none: PREEMPT_DYNAMIC kernel booted no-preempt (server/throughput) mode.
-#   Runtime-switchable via /sys/kernel/debug/sched/preempt; scx_bpfland --server
-#   handles userspace scheduling latency.
+# preempt=lazy: this PREEMPT_DYNAMIC build (CONFIG_PREEMPT base) exposes 'full' and
+#   'lazy' as preempt modes; 'none'/'voluntary' are NOT built, so an earlier preempt=none
+#   was rejected and the kernel ran 'full'. preempt=lazy IS honored (verified at cold
+#   boot) and is the throughput-lean server pick: fair-class tasks run fuller slices
+#   while RT-class threaded IRQs still preempt immediately (low latency). scx_bpfland
+#   --server is the real scheduler and dominates regardless. Runtime-switchable via
+#   /sys/kernel/debug/sched/preempt.
 # mitigations=auto: keep CPU vulnerability mitigations on (box is internet-exposed).
 # No i915.enable_guc=3: Panther Lake iGPU uses xe driver, not i915
-GRUB_CMDLINE_ADD="threadirqs usbcore.autosuspend=-1 nvme_core.default_ps_max_latency_us=0 zswap.enabled=1 zswap.shrinker_enabled=1 zswap.compressor=zstd zswap.max_pool_percent=20 zswap.zpool=z3fold mitigations=auto intel_pstate=active preempt=none"
+GRUB_CMDLINE_ADD="threadirqs usbcore.autosuspend=-1 nvme_core.default_ps_max_latency_us=0 zswap.enabled=1 zswap.shrinker_enabled=1 zswap.compressor=zstd zswap.max_pool_percent=20 zswap.zpool=z3fold mitigations=auto intel_pstate=active preempt=lazy"
 
 if grep -q '^GRUB_CMDLINE_LINUX_DEFAULT=' /etc/default/grub; then
   CURRENT="$(grep '^GRUB_CMDLINE_LINUX_DEFAULT=' /etc/default/grub | \
