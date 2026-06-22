@@ -12,7 +12,7 @@ SCX_TAG="${SCX_TAG:?SCX_TAG env var required, e.g. v1.1.1}"
 # scx_loader/scxctl live in the separate sched-ext/scx-loader repo and are
 # not built here. The device's start script already has a working fallback
 # chain that runs these schedulers directly when scx_loader is absent.
-SCX_BINARIES=(scx_bpfland scx_p2dq scx_rusty scx_beerland scx_lavd)
+SCX_BINARIES=(scx_flash scx_bpfland scx_p2dq scx_rusty scx_beerland scx_lavd)
 
 msg() { echo ":: $*"; }
 

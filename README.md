@@ -29,7 +29,7 @@ Tracks `linux-cachyos-server`, CachyOS stable server variant with server-optimiz
 | Setting                | Value                                                                        |
 | ---------------------- | ---------------------------------------------------------------------------- |
 | Base scheduler         | EEVDF (servermax profile)                                                    |
-| sched_ext              | Compiled in, `scx_bpfland --server` auto-starts on install                  |
+| sched_ext              | Compiled in, `scx_flash` auto-starts on install (verifies attach, falls back to `scx_bpfland`) |
 | Compiler               | LLVM / Clang + LLD                                                           |
 | LTO                    | ThinLTO                                                                      |
 | CPU target             | x86-64-v3 (AVX2, BMI2, FMA, LZCNT)                                          |
@@ -65,8 +65,10 @@ Tracks `linux-cachyos-server`, CachyOS stable server variant with server-optimiz
 
 Panther Lake has 4P + 8E + 4LP-E = 16C/16T with Intel Thread Director + HFI, heterogeneous topology.
 
-- **Primary**: `scx_bpfland -s 20000 -S` (20 ms slice, strict-affinity server tasks)
-- **Fallback chain**: `scx_p2dq` -> `scx_bpfland` (no args) -> `scx_rusty` -> `scx_beerland` -> `scx_lavd`
+- **Primary**: `scx_flash` (EDF scheduler with dynamic per-task latency weights; prioritizes latency-sensitive tasks that yield early, deprioritizes batch tasks that burn their full slice - well matched to Plex transcode running alongside interactive streaming + high-speed networking)
+- **Fallback chain**: `scx_bpfland -s 20000 -S` -> `scx_p2dq` -> `scx_bpfland` (no args) -> `scx_rusty` -> `scx_beerland` -> `scx_lavd`
+
+The start script **verifies each scheduler actually attaches** to sched_ext (`/sys/kernel/sched_ext/root/ops`) before committing to it. A primary that dies or never attaches degrades to the next candidate, never to "no scheduler". So if `scx_flash` is absent or fails to attach, the box lands on the proven `scx_bpfland`.
 
 `scx_lavd` is topology-aware for P/E/LP-E but has a documented E-core over-prioritization issue (observed on the sibling Lunar Lake architecture). It remains as a late fallback until upstream resolves it.
 
@@ -230,8 +232,8 @@ On first run and each new release, the installer handles everything without manu
 - Writes `/etc/udev/rules.d/60-nuc16pro-ioschedulers.rules` (ADIOS for SSDs/NVMe, BFQ for HDDs)
 - Installs and enables `/etc/systemd/system/nuc16pro-servermax-cpupower.service` (EPP=performance, HWP dynamic boost, and platform_profile=performance on all P/E/LP-E cores; masks `power-profiles-daemon` so it stays the single owner)
 - Installs and enables `/etc/systemd/system/nuc16pro-servermax-power.service` (BIOS owns PL1/PL2/Tau and the platform profile; the OS sets only energy_perf_bias=0, NVMe nr_requests=1023, igc ring buffers, and the TjMax 100°C thermal trip, all within the BIOS power envelope)
-- Downloads `scx_bpfland`, `scx_p2dq`, `scx_rusty`, `scx_beerland`, `scx_lavd` from this repo's own `scx-*` GitHub release (built by `build-scx-schedulers.yml`), verifies against `SHA256SUMS`, installs to `/usr/local/bin`
-- Enables `scx_loader` with `scx_bpfland` in Server mode (or direct service as fallback)
+- Downloads `scx_flash`, `scx_bpfland`, `scx_p2dq`, `scx_rusty`, `scx_beerland`, `scx_lavd` from this repo's own `scx-*` GitHub release (built by `build-scx-schedulers.yml`), verifies against `SHA256SUMS`, installs to `/usr/local/bin`
+- Enables `scx_loader` with `scx_flash` in Server mode (or direct service as fallback)
 - Updates GRUB cmdline: `threadirqs usbcore.autosuspend=-1 nvme_core.default_ps_max_latency_us=0 zswap.enabled=1 zswap.shrinker_enabled=1 zswap.compressor=zstd zswap.max_pool_percent=20 zswap.zpool=z3fold mitigations=auto intel_pstate=active preempt=lazy`
 - Removes stale `i915.enable_guc=3` if present from previous config
 - Purges all previous custom `cachyos-nuc16pro` kernels, keeping only the newest installed + the currently running kernel (panic fallback)
@@ -242,7 +244,7 @@ On first run and each new release, the installer handles everything without manu
 
 ### 4. sched_ext schedulers
 
-The kernel has `CONFIG_SCHED_CLASS_EXT=y` and `CONFIG_DEBUG_INFO_BTF=y`. After install, `scx_bpfland` runs in Server mode automatically.
+The kernel has `CONFIG_SCHED_CLASS_EXT=y` and `CONFIG_DEBUG_INFO_BTF=y`. After install, `scx_flash` runs automatically (the start script falls back to `scx_bpfland` if it is absent or fails to attach).
 
 To switch schedulers manually:
 
@@ -251,13 +253,14 @@ To switch schedulers manually:
 systemctl stop nuc16pro-scx-server.service  # or scx_loader
 
 # Run a different scheduler
-sudo scx_bpfland -s 20000 -S        # bpfland server (primary)
+sudo scx_flash                       # flash (primary, EDF latency-weighted)
+sudo scx_bpfland -s 20000 -S         # bpfland server (fallback)
 sudo scx_p2dq --keep-running         # p2dq server
 sudo scx_rusty                       # rusty (general)
 sudo scx_lavd                        # lavd (P/E/LP-E topology-aware, use with caution)
 
 # Or switch via scx_loader
-scxctl start --scheduler scx_bpfland --mode Server
+scxctl start --scheduler scx_flash --mode Server
 ```
 
 ### 5. Dual NIC: WiFi 7 + 2.5GbE simultaneously
