@@ -228,7 +228,7 @@ On first run and each new release, the installer handles everything without manu
 - Writes `/etc/modprobe.d/nuc16pro-wifi.conf` (`iwlwifi power_save=0`, `iwlmvm power_scheme=1`)
 - Writes `/etc/sysctl.d/99-nuc16pro-servermax.conf` (BBR+FQ, large buffers, inotify, vm tuning, `rp_filter=2` for dual NIC)
 - Writes `/etc/udev/rules.d/60-nuc16pro-ioschedulers.rules` (ADIOS for SSDs/NVMe, BFQ for HDDs)
-- Installs and enables `/etc/systemd/system/nuc16pro-servermax-cpupower.service` (EPP=performance on all P/E/LP-E cores; masks `power-profiles-daemon` so it stays the single owner)
+- Installs and enables `/etc/systemd/system/nuc16pro-servermax-cpupower.service` (EPP=performance, HWP dynamic boost, and platform_profile=performance on all P/E/LP-E cores; masks `power-profiles-daemon` so it stays the single owner)
 - Installs and enables `/etc/systemd/system/nuc16pro-servermax-power.service` (BIOS owns PL1/PL2/Tau and the platform profile; the OS sets only energy_perf_bias=0, NVMe nr_requests=1023, igc ring buffers, and the TjMax 100°C thermal trip, all within the BIOS power envelope)
 - Downloads `scx_bpfland`, `scx_p2dq`, `scx_rusty`, `scx_beerland`, `scx_lavd` from this repo's own `scx-*` GitHub release (built by `build-scx-schedulers.yml`), verifies against `SHA256SUMS`, installs to `/usr/local/bin`
 - Enables `scx_loader` with `scx_bpfland` in Server mode (or direct service as fallback)
@@ -285,9 +285,9 @@ There is also nothing for the OS to unlock: the Core Ultra 7 356H is hard-capped
 - igc (I226-V) ring buffers rx/tx=4096
 - x86 package passive thermal trip raised to TjMax (100°C) so the kernel does not software-throttle before hardware PROCHOT. This is a CPU-throttle threshold, not a fan curve, and does not touch BIOS/EC fan control.
 
-Frequency scaling stays aggressive via `nuc16pro-servermax-cpupower.service`, which sets EPP=performance on every core. intel_pstate runs in active mode and the powersave governor is kept on purpose: on this power-limited package it lets idle cores drop frequency and release budget so loaded cores turbo higher (pinning the performance governor would hold idle cores at max and steal that budget). `power-profiles-daemon` is masked so this stays the single, deterministic owner of EPP.
+Frequency scaling stays aggressive via `nuc16pro-servermax-cpupower.service`, which sets EPP=performance on every core, enables HWP dynamic boost (faster ramp on task wakeup, lower latency), and asserts `platform_profile=performance` (the firmware DPTF power slider; cold-boot default is `balanced`). intel_pstate runs in active mode and the powersave governor is kept on purpose: on this power-limited package it lets idle cores drop frequency and release budget so loaded cores turbo higher (pinning the performance governor would hold idle cores at max and steal that budget). `power-profiles-daemon` is masked so this stays the single, deterministic owner of these knobs.
 
-**ACPI platform_profile** is a firmware thermal/turbo knob (backed by the DPTF "SoC Power Slider"). The OS leaves it to BIOS, so your BIOS-booted profile stands. Fan RPM is not surfaced through standard hwmon on this board, so the temperature sensors (per-core coretemp, `x86_pkg_temp`, NVMe, WiFi) are the actionable thermal signal while the BIOS/EC governs the fan response.
+**ACPI platform_profile** is a firmware thermal/turbo knob (backed by the DPTF "SoC Power Slider"). The cpupower service asserts `performance` here, since the cold-boot firmware default is `balanced` and `power-profiles-daemon` (which used to drive it) is masked. Fan RPM is not surfaced through standard hwmon on this board, so the temperature sensors (per-core coretemp, `x86_pkg_temp`, NVMe, WiFi) are the actionable thermal signal while the BIOS/EC governs the fan response.
 
 To check power and thermal state (the RAPL reads show the BIOS-set limits):
 
@@ -298,7 +298,7 @@ cat /sys/class/powercap/intel-rapl/intel-rapl:0/constraint_1_power_limit_uw   # 
 sensors  # requires lm-sensors
 ```
 
-To check or switch the platform profile (the OS does not persist one; BIOS owns the default):
+To check or switch the platform profile (cpupower.service sets `performance` at boot; switch it live if you want quieter and cooler):
 
 ```bash
 cat /sys/firmware/acpi/platform_profile_choices                  # low-power balanced performance

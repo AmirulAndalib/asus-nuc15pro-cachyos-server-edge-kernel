@@ -269,18 +269,26 @@ systemctl mask --now power-profiles-daemon.service 2>/dev/null || true
 # handles per-core-type scheduling automatically at the firmware level.
 install -Dm644 /dev/stdin /etc/systemd/system/nuc16pro-servermax-cpupower.service <<'SERVICE'
 [Unit]
-Description=NUC 16 Pro ServerMax CPU performance policy (intel_pstate EPP, Panther Lake P/E/LP-E)
+Description=NUC 16 Pro ServerMax CPU performance policy (EPP + HWP boost + platform_profile, Panther Lake P/E/LP-E)
 After=multi-user.target
 
 [Service]
 Type=oneshot
-# intel_pstate runs in active mode. The powersave governor is the right default on
-# this power-limited package (BIOS PL1 ~30W): light cores drop frequency and release
-# budget so loaded cores turbo higher. We do NOT pin the performance governor; it
-# would hold idle cores at max P-state and steal that budget. EPP=performance biases
-# every core toward max under load. power-profiles-daemon is masked by the updater so
-# this oneshot is the single owner of EPP (no boot-time race over the knob).
+# intel_pstate active mode. The powersave governor is the right default on this
+# power-limited package (firmware clamps PL1 low under load): light cores drop
+# frequency and release budget so loaded cores turbo higher. We do NOT pin the
+# performance governor; it would hold idle cores at max P-state and steal that budget.
+# Three knobs are asserted instead:
+#  - EPP=performance: bias every core toward max under load.
+#  - hwp_dynamic_boost=1: ramp frequency faster on task wakeup (lower latency).
+#  - platform_profile=performance: firmware DPTF power slider to max. The cold-boot
+#    firmware default here is balanced, and PPD (which used to assert this) is masked,
+#    so nothing else sets it.
+# power-profiles-daemon is masked by the updater, so this oneshot is the single owner
+# of EPP / platform_profile (no boot-time race over those knobs).
 ExecStart=/bin/sh -c 'for e in /sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference; do [ -w "$e" ] && echo performance > "$e" || true; done'
+ExecStart=/bin/sh -c '[ -w /sys/devices/system/cpu/intel_pstate/hwp_dynamic_boost ] && echo 1 > /sys/devices/system/cpu/intel_pstate/hwp_dynamic_boost || true'
+ExecStart=/bin/sh -c '[ -w /sys/firmware/acpi/platform_profile ] && echo performance > /sys/firmware/acpi/platform_profile || true'
 RemainAfterExit=yes
 
 [Install]
@@ -302,18 +310,14 @@ After=multi-user.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-# Power limits (PL1/PL2/Tau) and the ACPI platform_profile are deliberately NOT
-# written here:
-#  - RAPL: the 356H is hard-capped at its 80W Maximum Turbo Power (Intel spec),
-#    confirmed on-device (package stays <=80W under stress even with RAPL raised
-#    to 104W). A write above 80W is inert and below it would only throttle, so
-#    there is nothing to gain; BIOS owns PL1/PL2/Tau.
-#  - platform_profile: left to BIOS, which is where the thermal and fan curves
-#    are configured on this box. (To bias max turbo from the OS instead, add an
-#    ExecStart that writes 'performance' to /sys/firmware/acpi/platform_profile.)
-# The updater still reads the RAPL constraints for status, so the BIOS-set
-# PL1/PL2 remain visible. Everything below tunes devices WITHIN the BIOS envelope
-# and never changes power limits or fan curves.
+# Power limits (PL1/PL2/Tau) are deliberately NOT written here. The 356H is hard-capped
+# at its 80W Maximum Turbo Power (Intel spec), confirmed on-device (package stays <=80W
+# under stress even with RAPL raised to 104W). A write above 80W is inert and below it
+# would only throttle, so there is nothing to gain; BIOS owns PL1/PL2/Tau, and the
+# updater still reads the RAPL constraints for status so they stay visible. (The ACPI
+# platform_profile IS set to performance, but by the cpupower service, not here.)
+# Everything below tunes devices WITHIN the BIOS envelope and never changes power
+# limits or fan curves.
 # energy_perf_bias=0: no microarchitecture power-saving bias on any core
 ExecStart=/bin/sh -c 'for b in /sys/devices/system/cpu/cpu*/power/energy_perf_bias; do [ -w "$b" ] && printf 0 > "$b"; done; true'
 # NVMe: maximize request queue depth per namespace for Gen4/Gen5 throughput
