@@ -8,8 +8,13 @@ Documentation=https://github.com/sched-ext/scx
 # and demotes the scheduler to the fallback. Attaching before docker.service inits
 # only a handful of cgroups up front, then each container's cgroup is initialized
 # incrementally as it starts. After=basic.target keeps /usr/local/bin and the cgroup
-# hierarchy ready; Before=docker.service gates the storm. (Was After=multi-user.target,
-# which put the unit in the middle of the storm and left a queued-but-unrun start job.)
+# hierarchy ready; Before=docker.service makes scx's ExecStart fire before dockerd's. This is
+# a SOFT order, not a hard gate: Type=simple marks the unit started at fork, so docker is not
+# held until flash has attached - in practice flash wins because docker also waits on
+# network-online.target (~13-14s in) while flash attaches in ~1s (a few s more if attempt 1
+# hits the early-boot ENOMEM and retries), and the try_primary retry below covers any miss.
+# (Was After=multi-user.target, which fired the unit ~68s in, mid-storm, behind a
+# plymouth-gated target, and left a queued-but-unrun start job.)
 After=basic.target
 Before=docker.service
 ConditionPathIsDirectory=/sys/kernel/sched_ext

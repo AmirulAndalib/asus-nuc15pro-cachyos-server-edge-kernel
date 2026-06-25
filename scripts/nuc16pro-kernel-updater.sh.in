@@ -250,6 +250,22 @@ systemctl enable nuc16pro-servermax-power.service || true
 # already on the target kernel (no kernel change -> no reboot -> service never re-fires).
 systemctl restart nuc16pro-servermax-power.service || true
 
+# Headless-server plymouth deadlock: plymouth-quit-wait.service runs `plymouth --wait` with
+# TimeoutStartUSec=infinity and is ordered Before=multi-user.target. On a server with no
+# graphical/display-manager handoff plymouthd never quits, so the unit blocks forever and
+# multi-user.target never completes - starving every After=multi-user.target unit (the
+# servermax tuning oneshots above) and leaving no getty console fallback. A drop-in replaces
+# ExecStart with /usr/bin/true so the oneshot succeeds instantly: nothing that Wants it
+# breaks, the target completes, tuning fires, and plymouth-quit.service tears down plymouthd
+# normally. Reversible (rm the drop-in), no GRUB/cmdline change. Guarded so it is a no-op on
+# systems without plymouth.
+if systemctl cat plymouth-quit-wait.service >/dev/null 2>&1; then
+  install -Dm644 /dev/stdin /etc/systemd/system/plymouth-quit-wait.service.d/10-headless-noop.conf <<'PLY_NOOP'
+@@FILE:systemd/plymouth-quit-wait-headless.conf@@
+PLY_NOOP
+  systemctl daemon-reload
+fi
+
 msg "installing sched_ext schedulers"
 
 LAST_SCX_TAG_FILE="$STATE_DIR/last-installed-scx-tag"

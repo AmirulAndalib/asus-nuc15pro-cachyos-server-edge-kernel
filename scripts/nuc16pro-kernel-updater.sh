@@ -345,6 +345,31 @@ systemctl enable nuc16pro-servermax-power.service || true
 # already on the target kernel (no kernel change -> no reboot -> service never re-fires).
 systemctl restart nuc16pro-servermax-power.service || true
 
+# Headless-server plymouth deadlock: plymouth-quit-wait.service runs `plymouth --wait` with
+# TimeoutStartUSec=infinity and is ordered Before=multi-user.target. On a server with no
+# graphical/display-manager handoff plymouthd never quits, so the unit blocks forever and
+# multi-user.target never completes - starving every After=multi-user.target unit (the
+# servermax tuning oneshots above) and leaving no getty console fallback. A drop-in replaces
+# ExecStart with /usr/bin/true so the oneshot succeeds instantly: nothing that Wants it
+# breaks, the target completes, tuning fires, and plymouth-quit.service tears down plymouthd
+# normally. Reversible (rm the drop-in), no GRUB/cmdline change. Guarded so it is a no-op on
+# systems without plymouth.
+if systemctl cat plymouth-quit-wait.service >/dev/null 2>&1; then
+  install -Dm644 /dev/stdin /etc/systemd/system/plymouth-quit-wait.service.d/10-headless-noop.conf <<'PLY_NOOP'
+# Headless server: plymouthd never gets a graphical/display-manager handoff, so the stock
+# ExecStart `plymouth --wait` blocks with TimeoutStartUSec=infinity. plymouth-quit-wait is
+# ordered Before=multi-user.target, so the whole target stalls and every
+# After=multi-user.target unit (the servermax tuning oneshots) plus the getty console never
+# start. Replace the wait with a no-op: the oneshot still runs and succeeds instantly, so
+# nothing that Wants it breaks, the target completes, and plymouth-quit.service then tears
+# down plymouthd normally.
+[Service]
+ExecStart=
+ExecStart=/usr/bin/true
+PLY_NOOP
+  systemctl daemon-reload
+fi
+
 msg "installing sched_ext schedulers"
 
 LAST_SCX_TAG_FILE="$STATE_DIR/last-installed-scx-tag"
@@ -520,8 +545,13 @@ Documentation=https://github.com/sched-ext/scx
 # and demotes the scheduler to the fallback. Attaching before docker.service inits
 # only a handful of cgroups up front, then each container's cgroup is initialized
 # incrementally as it starts. After=basic.target keeps /usr/local/bin and the cgroup
-# hierarchy ready; Before=docker.service gates the storm. (Was After=multi-user.target,
-# which put the unit in the middle of the storm and left a queued-but-unrun start job.)
+# hierarchy ready; Before=docker.service makes scx's ExecStart fire before dockerd's. This is
+# a SOFT order, not a hard gate: Type=simple marks the unit started at fork, so docker is not
+# held until flash has attached - in practice flash wins because docker also waits on
+# network-online.target (~13-14s in) while flash attaches in ~1s (a few s more if attempt 1
+# hits the early-boot ENOMEM and retries), and the try_primary retry below covers any miss.
+# (Was After=multi-user.target, which fired the unit ~68s in, mid-storm, behind a
+# plymouth-gated target, and left a queued-but-unrun start job.)
 After=basic.target
 Before=docker.service
 ConditionPathIsDirectory=/sys/kernel/sched_ext
