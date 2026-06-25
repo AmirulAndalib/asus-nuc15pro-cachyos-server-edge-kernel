@@ -513,7 +513,17 @@ install -Dm644 /dev/stdin /etc/systemd/system/nuc16pro-scx-server.service <<'SCX
 [Unit]
 Description=sched_ext server scheduler - ASUS NUC 16 Pro (Panther Lake)
 Documentation=https://github.com/sched-ext/scx
-After=multi-user.target
+# Attach the scheduler before dockerd starts the container fleet. sched_ext runs
+# ops.cgroup_init() once per existing cgroup at attach time; attaching after the
+# ~20 docker-<app>.service units launch means ~175 cgroups are initialized in one
+# batch under boot slab pressure, which transiently fails -ENOMEM (cgroup_init -12)
+# and demotes the scheduler to the fallback. Attaching before docker.service inits
+# only a handful of cgroups up front, then each container's cgroup is initialized
+# incrementally as it starts. After=basic.target keeps /usr/local/bin and the cgroup
+# hierarchy ready; Before=docker.service gates the storm. (Was After=multi-user.target,
+# which put the unit in the middle of the storm and left a queued-but-unrun start job.)
+After=basic.target
+Before=docker.service
 ConditionPathIsDirectory=/sys/kernel/sched_ext
 
 [Service]
