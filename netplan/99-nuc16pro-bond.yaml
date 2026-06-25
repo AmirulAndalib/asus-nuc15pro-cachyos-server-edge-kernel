@@ -1,18 +1,21 @@
-# Canonical 802.3ad (LACP) bond for the NUC 16 Pro's two Intel I226-V 2.5GbE ports.
+# Static-LAG bond (balance-xor) for the NUC 16 Pro's two Intel I226-V 2.5GbE ports.
 #
-# MANUAL one-time setup, applied by scripts/nuc16pro-bond-apply.sh - deliberately NOT
-# deployed by the daily kernel updater. Auto-applying a bond unattended could leave the box
-# unreachable on the next reboot if the upstream switch LAG is ever changed/removed.
+# This box's switch is a Grandstream GWN7721 (Lite-managed) which supports STATIC link
+# aggregation only - NO LACP / 802.3ad. So the bond uses mode `balance-xor` to match a static
+# trunk: both ports active, TX hashed across them by layer3+4. The bond mode MUST match the
+# switch LAG type (static<->balance-xor, LACP<->802.3ad) or the link flaps.
+#   -> If your switch DOES support 802.3ad LACP, use `mode: 802.3ad` + `lacp-rate: fast`
+#      instead (cleaner, switch-negotiated, detects miswiring).
 #
-# Prerequisite: the upstream managed switch (e.g. Grandstream GWN7721) must have a matching
-# 802.3ad LAG group on the two ports the NICs connect to. Without the switch side, LACP will
-# not form and the bond will not pass traffic.
+# MANUAL one-time setup, applied by scripts/nuc16pro-bond-apply.sh - deliberately NOT deployed
+# by the daily kernel updater (an unattended bond could brick the box on reboot if the switch
+# LAG is ever changed/removed). Prerequisite: a matching static LAG on the two switch ports.
 #
 # The bond MAC is cloned from enp87s0 so the DHCP lease / 192.168.8.13 (router port-forwards
 # and one pinned service) is preserved. WiFi (wlo1) stays a separate failover path.
 #
-# Reality: a single stream still caps at one link's 2.5 Gbps; LACP aggregates across multiple
-# concurrent flows, and RX distribution is chosen by the switch's hash policy.
+# Reality: a single stream still caps at one link's 2.5 Gbps; balance-xor aggregates across
+# multiple concurrent flows (TX by our hash; RX distribution is the switch's choice).
 network:
   version: 2
   renderer: NetworkManager
@@ -30,7 +33,6 @@ network:
       dhcp4: true
       dhcp6: true
       parameters:
-        mode: 802.3ad
-        lacp-rate: fast
+        mode: balance-xor
         mii-monitor-interval: 100
         transmit-hash-policy: layer3+4

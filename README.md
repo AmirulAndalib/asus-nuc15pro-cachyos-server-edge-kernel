@@ -43,7 +43,7 @@ Tracks `linux-cachyos-server`, CachyOS stable server variant with server-optimiz
 | Network offload        | TLS kernel offload, XDP sockets                                              |
 | Block layer            | BLK_WBT writeback throttling, NVMe multipath                                 |
 | NVMe power states      | Disabled (`nvme_core.default_ps_max_latency_us=0`, Gen4/Gen5 max perf)       |
-| Network                | 2x 2.5GbE bondable via 802.3ad LACP (see §5); WiFi 7 failover; `rp_filter=2` loose                     |
+| Network                | 2x 2.5GbE bonded (balance-xor, static LAG; §5); WiFi 7 failover; `rp_filter=2` loose                     |
 | GPU driver             | `xe` (Intel Xe3 LP Panther Lake, GuC auto-enabled); `i915` kept as fallback  |
 | IRQ affinity           | `threadirqs`: spread IRQs across P/E/LP-E cores                              |
 | Cgroup v2              | Full stack (CFS_BANDWIDTH, all controllers)                                  |
@@ -266,15 +266,19 @@ sudo scx_lavd                        # lavd (P/E/LP-E topology-aware, use with c
 scxctl start --scheduler scx_flash --mode Server
 ```
 
-### 5. Network: dual 2.5GbE LACP bond + WiFi failover
+### 5. Network: dual 2.5GbE bond + WiFi failover
 
-The box has two Intel I226-V 2.5GbE ports plus WiFi 7. The two wired ports can be bonded with **802.3ad LACP** for aggregate LAN throughput and link redundancy; WiFi stays a separate failover path.
+The box has two Intel I226-V 2.5GbE ports plus WiFi 7. The two wired ports are bonded for aggregate LAN throughput and link redundancy; WiFi stays a separate failover path.
 
-**Reality check:** a single TCP stream still caps at one link's 2.5 Gbps - LACP aggregates *across multiple concurrent flows*, it does not speed up one transfer, and RX distribution is chosen by the switch's hash policy. Internet traffic is capped by the WAN uplink, so the bond only helps LAN-internal many-flow workloads. WiFi cannot be bonded with Ethernet for throughput; its role is failover.
+**This box uses `balance-xor` (static LAG).** The upstream switch is a Grandstream GWN7721 (Lite-managed), which supports **static** link aggregation only - no LACP / 802.3ad. So the bond runs `mode: balance-xor` to match a static trunk: both ports active, TX spread across them by the hash policy. The bond mode must match the switch LAG type (static <-> `balance-xor`, LACP <-> `802.3ad`) or the link flaps. If your switch *does* support 802.3ad, use `mode: 802.3ad` + `lacp-rate: fast` instead (cleaner, switch-negotiated, detects miswiring).
 
-**Prerequisite:** the upstream managed switch must have a matching **802.3ad LAG group** on the two ports the NICs connect to (e.g. Grandstream GWN7721: *Link Aggregation* -> create LAG, mode LACP). Without the switch side, LACP will not form.
+**Reality check:** a single TCP stream still caps at one link's 2.5 Gbps - the bond aggregates *across multiple concurrent flows*, it does not speed up one transfer. Internet traffic is capped by the WAN uplink, so the bond mainly helps LAN-internal many-flow workloads. WiFi cannot be bonded with Ethernet for throughput; its role is failover.
 
-`netplan/99-nuc16pro-bond.yaml` is the canonical bond config (mode `802.3ad`, `lacp-rate fast`, `transmit-hash-policy layer3+4`, bond MAC cloned from the primary NIC so the DHCP lease / IP and router port-forwards are preserved). `scripts/nuc16pro-bond-apply.sh` applies it **safely**: it arms a PID1-owned auto-revert that survives the SSH drop during cutover and keeps the bond only if the box can still reach its gateway, so a missing/misconfigured switch LAG simply rolls back.
+**Hash policy - keep `layer3+4`.** The transmit hash is a *local* decision on the NUC (which slave each outgoing flow uses); the switch does not parse or need to "understand" it. `layer3+4` (src/dst IP + L4 port) spreads flows best - including internet-bound traffic, which all shares the router's MAC and would pile onto **one** link under `layer2`. So `layer2` is the *wrong* move here despite common advice; `layer3+4` is correct for an internet-facing server. (RX distribution, switch -> NUC, is the switch's own hash, not tunable on a basic switch; the NUC accepts frames on both ports regardless.)
+
+**Prerequisite (switch side):** create a **static LAG / trunk** on the two ports the NICs connect to (Grandstream GWN7721: *Link Aggregation* -> add both ports). The Linux bond mode must match: static trunk -> `balance-xor`; LACP/dynamic -> `802.3ad`.
+
+`netplan/99-nuc16pro-bond.yaml` is the canonical config (`balance-xor`, `layer3+4`, bond MAC cloned from the primary NIC so the DHCP lease / IP and router port-forwards are preserved). `scripts/nuc16pro-bond-apply.sh` applies it **safely**: it arms a PID1-owned auto-revert that survives the SSH drop during cutover and keeps the bond only if the box can still reach its gateway, so a wrong switch LAG just rolls back.
 
 Run it from the **physical console** (the cutover briefly drops SSH as the IP moves to `bond0`):
 
@@ -282,15 +286,17 @@ Run it from the **physical console** (the cutover briefly drops SSH as the IP mo
 sudo bash scripts/nuc16pro-bond-apply.sh
 ```
 
-Verify aggregation:
+Verify it is aggregating:
 
 ```bash
-cat /proc/net/bonding/bond0   # want: 802.3ad, non-zero Partner Mac (the switch), both slaves MII up, same Aggregator ID
+cat /proc/net/bonding/bond0                       # Bonding Mode: load balancing (xor); both slaves MII up, Link Failure Count 0
+cat /sys/class/net/enp86s0/statistics/tx_packets  # both counters climb under multi-flow load
+cat /sys/class/net/enp87s0/statistics/tx_packets
 ```
 
-**Troubleshooting LACP** (`Partner Mac Address: 00:00:00:00:00:00`): a zero partner MAC plus each slave on a *different* `Aggregator ID` means the switch is not answering LACP - the two ports are not in an LACP group on the switch. Confirm with `tcpdump -i <slave> -nne ether proto 0x8809`: if every LACPDU source is one of the NUC's own NIC MACs (never the switch's), the switch is flooding the frames rather than bundling them. Fix on the switch: the LAG must have **both** NIC ports as members **and** type **LACP / dynamic** (a LAG left on **Static** sends no LACPDUs, so Linux mode `802.3ad` never bundles). If the switch only offers a **static** trunk, change the bond `mode` to `balance-xor` and `transmit-hash-policy` to `layer2+3` to match it; if no switch LAG is possible at all, `balance-alb` aggregates with no switch config (less ideal on a container host with bridges). The `netplan apply` "systemd-networkd ... Falling back to a hard restart" line is benign on this NetworkManager-rendered box - networkd only renders `.link` naming files and manages no interfaces.
+For an `802.3ad` LAG instead, "working" is `Partner Mac` = the switch's real MAC, both slaves on the same `Aggregator ID`, `Number of ports: 2`. A `Partner Mac` of all-zeros means the switch is not running LACP on those ports (confirm with `tcpdump -i <slave> -nne ether proto 0x8809`: only the NUC's own NIC MACs appear) - use `balance-xor` + a static LAG, as here.
 
-This is a deliberate one-time manual step, **not** part of the daily updater - auto-applying a bond unattended could leave the box unreachable on reboot if the switch side ever changes. Once applied the config lives in `/etc/netplan` and persists across reboots on its own (NM connections `autoconnect=yes`, MAC cloned so the IP holds).
+This is a deliberate one-time manual step, **not** part of the daily updater - auto-applying a bond unattended could leave the box unreachable on reboot if the switch side changes. Once applied the config lives in `/etc/netplan` and persists across reboots (NM connections `autoconnect=yes`, MAC cloned so the IP holds). The `netplan apply` "systemd-networkd ... Falling back to a hard restart" line is benign on this NetworkManager-rendered box.
 
 `net.ipv4.conf.all.rp_filter = 2` (loose) stays set so the WiFi failover path and the wired path can both receive traffic without the kernel dropping asymmetrically-routed packets.
 
