@@ -217,6 +217,14 @@ install -Dm644 /dev/stdin /etc/udev/rules.d/60-nuc16pro-ioschedulers.rules <<'UD
 @@FILE:udev/60-nuc16pro-ioschedulers.rules@@
 UDEV
 
+# adios is built as a module (CONFIG_MQ_IOSCHED_ADIOS=m) and, unlike bfq, its module has no
+# "<name>-iosched" autoload alias, so the udev rule's ATTR{queue/scheduler}="adios" write
+# silently no-ops when adios is not already loaded (SSD/NVMe then fall back to mq-deadline or
+# none). Load it explicitly at boot so it is registered before udev coldplug applies the rule.
+install -Dm644 /dev/stdin /etc/modules-load.d/nuc16pro-adios.conf <<'MODLOAD'
+@@FILE:modules-load.d/adios.conf@@
+MODLOAD
+
 # power-profiles-daemon owns scaling_governor/EPP on intel_pstate and starts after
 # our oneshot at boot, overriding it (a boot-time race). Mask it so the cpupower
 # service below is the single, deterministic owner of EPP. This drops the GNOME
@@ -507,7 +515,12 @@ done
 #   /sys/kernel/debug/sched/preempt.
 # mitigations=auto: keep CPU vulnerability mitigations on (box is internet-exposed).
 # No i915.enable_guc=3: Panther Lake iGPU uses xe driver, not i915
-GRUB_CMDLINE_ADD="threadirqs usbcore.autosuspend=-1 nvme_core.default_ps_max_latency_us=0 zswap.enabled=1 zswap.shrinker_enabled=1 zswap.compressor=zstd zswap.max_pool_percent=20 zswap.zpool=z3fold mitigations=auto intel_pstate=active preempt=lazy"
+# zswap.zpool dropped 2026-06-25: z3fold was removed from the kernel (gone by 7.x), so
+# zswap.zpool=z3fold was inert - zswap silently fell back (live check showed zpool empty,
+# z3fold module absent). Omitting it uses the compiled default zsmalloc, which has the best
+# density anyway. zswap.zpool stays in the dedup list below so the stale z3fold token is
+# stripped from any existing /etc/default/grub on the next update.
+GRUB_CMDLINE_ADD="threadirqs usbcore.autosuspend=-1 nvme_core.default_ps_max_latency_us=0 zswap.enabled=1 zswap.shrinker_enabled=1 zswap.compressor=zstd zswap.max_pool_percent=20 mitigations=auto intel_pstate=active preempt=lazy"
 
 if grep -q '^GRUB_CMDLINE_LINUX_DEFAULT=' /etc/default/grub; then
   CURRENT="$(grep '^GRUB_CMDLINE_LINUX_DEFAULT=' /etc/default/grub | \

@@ -257,6 +257,18 @@ ACTION=="add|change", KERNEL=="sd[a-z]|mmcblk[0-9]", ATTR{queue/rotational}=="0"
 ACTION=="add|change", KERNEL=="nvme[0-9]n[0-9]", ATTR{queue/rotational}=="0", ATTR{queue/scheduler}="adios"
 UDEV
 
+# adios is built as a module (CONFIG_MQ_IOSCHED_ADIOS=m) and, unlike bfq, its module has no
+# "<name>-iosched" autoload alias, so the udev rule's ATTR{queue/scheduler}="adios" write
+# silently no-ops when adios is not already loaded (SSD/NVMe then fall back to mq-deadline or
+# none). Load it explicitly at boot so it is registered before udev coldplug applies the rule.
+install -Dm644 /dev/stdin /etc/modules-load.d/nuc16pro-adios.conf <<'MODLOAD'
+# adios I/O scheduler (CONFIG_MQ_IOSCHED_ADIOS=m). Its module lacks the "<name>-iosched"
+# autoload alias that bfq has, so writing "adios" to queue/scheduler from the udev rule
+# (60-nuc16pro-ioschedulers.rules) no-ops unless adios is already loaded - SSD/NVMe then
+# fall back to mq-deadline/none. Load it here so the rule can actually apply it at boot.
+adios
+MODLOAD
+
 # power-profiles-daemon owns scaling_governor/EPP on intel_pstate and starts after
 # our oneshot at boot, overriding it (a boot-time race). Mask it so the cpupower
 # service below is the single, deterministic owner of EPP. This drops the GNOME
@@ -322,8 +334,10 @@ RemainAfterExit=yes
 ExecStart=/bin/sh -c 'for b in /sys/devices/system/cpu/cpu*/power/energy_perf_bias; do [ -w "$b" ] && printf 0 > "$b"; done; true'
 # NVMe: maximize request queue depth per namespace for Gen4/Gen5 throughput
 ExecStart=/bin/sh -c 'for q in /sys/block/nvme*/queue/nr_requests; do [ -w "$q" ] && printf 1023 > "$q"; done; true'
-# igc (I226-V 2.5GbE): maximize ring buffers for throughput
-ExecStart=/bin/sh -c 'iface=$(ls /sys/class/net/ 2>/dev/null | grep -m1 "^e" || true); [ -n "$iface" ] && ethtool -G "$iface" rx 4096 tx 4096 2>/dev/null || true'
+# igc (dual I226-V 2.5GbE): maximize ring buffers on EVERY igc NIC. The box has two
+# (enp86s0 + enp87s0, both UP); the old grep -m1 "^e" tuned only the first. Match by driver
+# so docker bridges/veths are skipped and only real igc ports are touched.
+ExecStart=/bin/sh -c 'for n in /sys/class/net/*; do [ -e "$n/device/driver" ] || continue; [ "$(basename "$(readlink "$n/device/driver")")" = igc ] || continue; ethtool -G "$(basename "$n")" rx 4096 tx 4096 2>/dev/null || true; done; true'
 # Thermal: set x86 package passive trip point to 100C = TjMax for Panther Lake 356H.
 # This lets the CPU run at full turbo until hardware PROCHOT fires at TjMax.
 # Only type=passive trips are touched; type=critical (emergency shutdown) is left untouched.
@@ -639,7 +653,12 @@ done
 #   /sys/kernel/debug/sched/preempt.
 # mitigations=auto: keep CPU vulnerability mitigations on (box is internet-exposed).
 # No i915.enable_guc=3: Panther Lake iGPU uses xe driver, not i915
-GRUB_CMDLINE_ADD="threadirqs usbcore.autosuspend=-1 nvme_core.default_ps_max_latency_us=0 zswap.enabled=1 zswap.shrinker_enabled=1 zswap.compressor=zstd zswap.max_pool_percent=20 zswap.zpool=z3fold mitigations=auto intel_pstate=active preempt=lazy"
+# zswap.zpool dropped 2026-06-25: z3fold was removed from the kernel (gone by 7.x), so
+# zswap.zpool=z3fold was inert - zswap silently fell back (live check showed zpool empty,
+# z3fold module absent). Omitting it uses the compiled default zsmalloc, which has the best
+# density anyway. zswap.zpool stays in the dedup list below so the stale z3fold token is
+# stripped from any existing /etc/default/grub on the next update.
+GRUB_CMDLINE_ADD="threadirqs usbcore.autosuspend=-1 nvme_core.default_ps_max_latency_us=0 zswap.enabled=1 zswap.shrinker_enabled=1 zswap.compressor=zstd zswap.max_pool_percent=20 mitigations=auto intel_pstate=active preempt=lazy"
 
 if grep -q '^GRUB_CMDLINE_LINUX_DEFAULT=' /etc/default/grub; then
   CURRENT="$(grep '^GRUB_CMDLINE_LINUX_DEFAULT=' /etc/default/grub | \
